@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Music Player temp files
+.temp_audio/
+.youtube_downloads/
+.melodify_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.mp4
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.wma
+

@@ -1,0 +1,24 @@
+# Melodify - Music Player Dependencies
+# =====================================
+
+# Audio playback engine
+pygame>=2.5.0
+
+# MP4/M4A/AAC support (requires FFmpeg installed on system)
+pydub>=0.25.1
+
+# Required for Python 3.13+ (audioop was removed)
+audioop-lts>=0.2.2
+
+# Optional: For accurate audio metadata/duration
+mutagen>=1.47.0
+
+# Video support for MP4
+# Pin numpy version để tương thích với các package khác (langchain, numba, streamlit)
+numpy>=1.26.0,<2.0.0
+# OpenCV version tương thích với numpy 1.x
+opencv-python>=4.6.0,<4.8.0
+Pillow>=10.0.0
+
+# YouTube support
+yt-dlp>=2023.12.30

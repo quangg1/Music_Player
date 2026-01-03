@@ -1,0 +1,2451 @@
+# ============================================
+# 🎵 MELODIFY - MUSIC PLAYER WITH LINKED LIST
+# ============================================
+# Ứng dụng nghe nhạc sử dụng Doubly Linked List
+# Developed for DSA Project
+# ============================================
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import os
+import threading
+import time
+import shutil
+import json
+from pathlib import Path
+from typing import Optional
+import random
+from datetime import datetime
+
+try:
+    import pygame
+    # Khởi tạo pygame mixer với settings tối ưu cho nhiều định dạng
+    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("⚠️ pygame not installed. Run: pip install pygame")
+
+# Video support
+try:
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageTk
+    VIDEO_AVAILABLE = True
+except ImportError:
+    VIDEO_AVAILABLE = False
+    print("⚠️ Video support not available. Install: pip install opencv-python Pillow")
+
+# Kiểm tra pydub + ffmpeg cho MP4 support
+FFMPEG_AVAILABLE = False
+PYDUB_AVAILABLE = False
+
+def find_ffmpeg():
+    """Tìm và thêm FFmpeg vào PATH nếu cài qua winget"""
+    import subprocess
+    import glob
+    
+    # Kiểm tra FFmpeg đã có trong PATH chưa
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        if result.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
+    
+    # Tìm FFmpeg trong các đường dẫn phổ biến (Windows)
+    if os.name == 'nt':
+        search_paths = [
+            os.path.expanduser(r"~\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg*\ffmpeg-*\bin"),
+            os.path.expanduser(r"~\AppData\Local\Microsoft\WinGet\Links"),
+            r"C:\ffmpeg\bin",
+            r"C:\Program Files\ffmpeg\bin",
+            r"C:\tools\ffmpeg\bin",
+        ]
+        
+        for pattern in search_paths:
+            matches = glob.glob(pattern)
+            for path in matches:
+                ffmpeg_exe = os.path.join(path, "ffmpeg.exe")
+                if os.path.exists(ffmpeg_exe):
+                    # Thêm vào PATH
+                    os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+                    print(f"📍 Found FFmpeg at: {path}")
+                    return True
+    
+    return False
+
+# Tìm FFmpeg trước
+if find_ffmpeg():
+    FFMPEG_AVAILABLE = True
+    print("✅ FFmpeg detected - MP4 support enabled")
+else:
+    print("⚠️ FFmpeg not found. Install: winget install ffmpeg")
+
+# Kiểm tra pydub
+try:
+    from pydub import AudioSegment
+    PYDUB_AVAILABLE = True
+    print("✅ pydub loaded successfully")
+except ImportError as e:
+    print(f"⚠️ pydub import error: {e}")
+except Exception as e:
+    print(f"⚠️ pydub error: {e}")
+
+# YouTube support
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+    print("✅ yt-dlp loaded successfully - YouTube support enabled")
+except ImportError:
+    YT_DLP_AVAILABLE = False
+    print("⚠️ yt-dlp not installed. Run: pip install yt-dlp")
+
+import re
+import webbrowser
+import urllib.parse
+
+from linked_list import PlaylistLinkedList, Song
+
+
+# ==================== COLOR SCHEME ====================
+class Theme:
+    """Cyberpunk/Neon Theme"""
+    BG_DARK = "#0a0a0f"
+    BG_CARD = "#12121a"
+    BG_HOVER = "#1a1a2e"
+    
+    ACCENT_PRIMARY = "#00d4ff"      # Cyan
+    ACCENT_SECONDARY = "#ff006e"    # Pink/Magenta
+    ACCENT_TERTIARY = "#8338ec"     # Purple
+    
+    TEXT_PRIMARY = "#ffffff"
+    TEXT_SECONDARY = "#a0a0b0"
+    TEXT_MUTED = "#505060"
+    
+    SUCCESS = "#00ff88"
+    WARNING = "#ffaa00"
+    
+    GRADIENT_START = "#00d4ff"
+    GRADIENT_END = "#ff006e"
+
+
+# ==================== MUSIC PLAYER ENGINE ====================
+class MusicEngine:
+    """Engine phát nhạc sử dụng pygame với hỗ trợ MP4"""
+    
+    # Định dạng cần convert (video formats)
+    VIDEO_FORMATS = {'.mp4', '.webm', '.avi', '.mkv', '.mov'}
+    AUDIO_ONLY_FORMATS = {'.m4a', '.aac', '.wma'}
+    CONVERT_FORMATS = VIDEO_FORMATS | AUDIO_ONLY_FORMATS
+    
+    def __init__(self):
+        self.is_playing = False
+        self.is_paused = False
+        self.current_pos = 0.0
+        self.duration = 0.0
+        self._volume = 0.7
+        self._temp_file = None  # File tạm cho convert
+        self._temp_dir = os.path.join(os.path.dirname(__file__), '.temp_audio')
+        self._youtube_dir = os.path.join(os.path.dirname(__file__), '.youtube_downloads')
+        self._video_path = None  # Path to video file
+        self._has_video = False  # Whether current file has video
+        self._is_youtube = False  # Whether current file is from YouTube
+        
+        # Tạo thư mục temp
+        if not os.path.exists(self._temp_dir):
+            os.makedirs(self._temp_dir)
+        if not os.path.exists(self._youtube_dir):
+            os.makedirs(self._youtube_dir)
+        
+        if PYGAME_AVAILABLE:
+            pygame.mixer.music.set_volume(self._volume)
+    
+    def has_video_stream(self, path: str) -> bool:
+        """Kiểm tra file có video stream không"""
+        if not VIDEO_AVAILABLE:
+            return False
+        
+        try:
+            cap = cv2.VideoCapture(path)
+            has_video = cap.isOpened() and cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0
+            cap.release()
+            return has_video
+        except:
+            return False
+    
+    def load(self, path: str) -> bool:
+        """Load file nhạc - tự động convert MP4/M4A nếu cần"""
+        if not PYGAME_AVAILABLE:
+            return False
+        
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            
+            # Kiểm tra có video không
+            self._has_video = ext in self.VIDEO_FORMATS and self.has_video_stream(path)
+            
+            if self._has_video:
+                # Giữ video path để phát video
+                self._video_path = path
+                # Extract audio để phát
+                converted_path = self._convert_to_wav(path)
+                if converted_path:
+                    path = converted_path
+                else:
+                    return False
+            elif ext in self.AUDIO_ONLY_FORMATS:
+                # Chỉ audio, convert như bình thường
+                converted_path = self._convert_to_wav(path)
+                if converted_path:
+                    path = converted_path
+            else:
+                # Không phải video format, dùng trực tiếp
+                self._video_path = None
+                self._has_video = False
+            
+            pygame.mixer.music.load(path)
+            self.duration = self._get_duration(path)
+            self.current_pos = 0
+            return True
+        except Exception as e:
+            print(f"Error loading: {e}")
+            return False
+    
+    def _convert_to_wav(self, path: str) -> Optional[str]:
+        """Convert MP4/M4A sang WAV để pygame phát được"""
+        if not PYDUB_AVAILABLE:
+            print("⚠️ pydub not installed. Run: pip install pydub")
+            return None
+        
+        if not FFMPEG_AVAILABLE:
+            print("⚠️ FFmpeg not found. Please restart terminal or add FFmpeg to PATH.")
+            return None
+        
+        try:
+            from pydub import AudioSegment
+            
+            # Tạo tên file temp
+            filename = os.path.basename(path)
+            temp_path = os.path.join(self._temp_dir, f"{os.path.splitext(filename)[0]}.wav")
+            
+            print(f"🔄 Converting {filename}...")
+            
+            # Convert
+            ext = os.path.splitext(path)[1].lower()
+            if ext == '.mp4' or ext == '.m4a':
+                audio = AudioSegment.from_file(path, format="mp4")
+            elif ext == '.webm':
+                audio = AudioSegment.from_file(path, format="webm")
+            else:
+                audio = AudioSegment.from_file(path)
+            
+            audio.export(temp_path, format="wav")
+            self._temp_file = temp_path
+            
+            print(f"✅ Converted successfully!")
+            return temp_path
+        except Exception as e:
+            print(f"❌ Convert error: {e}")
+            return None
+    
+    def cleanup_temp(self):
+        """Dọn dẹp file tạm"""
+        if self._temp_file and os.path.exists(self._temp_file):
+            try:
+                os.remove(self._temp_file)
+            except:
+                pass
+    
+    def play(self) -> None:
+        if not PYGAME_AVAILABLE:
+            return
+        if self.is_paused:
+            pygame.mixer.music.unpause()
+        else:
+            pygame.mixer.music.play()
+        self.is_playing = True
+        self.is_paused = False
+    
+    def pause(self) -> None:
+        if not PYGAME_AVAILABLE:
+            return
+        pygame.mixer.music.pause()
+        self.is_paused = True
+    
+    def stop(self) -> None:
+        if not PYGAME_AVAILABLE:
+            return
+        pygame.mixer.music.stop()
+        self.is_playing = False
+        self.is_paused = False
+        self.current_pos = 0
+        self._video_path = None
+        self._has_video = False
+        self.cleanup_temp()
+    
+    def seek(self, position: float) -> None:
+        """Seek đến vị trí (giây)"""
+        if not PYGAME_AVAILABLE:
+            return
+        
+        # Giới hạn position trong khoảng hợp lệ
+        position = max(0, min(position, self.duration))
+        self.current_pos = position
+        
+        # pygame.mixer.music.set_pos() không hoạt động tốt với mọi format
+        # Nên chỉ cập nhật current_pos, video player sẽ xử lý phần video
+        # Audio sẽ tự đồng bộ theo progress
+        try:
+            # Thử seek nếu có thể (có thể không hoạt động với một số format)
+            pygame.mixer.music.set_pos(position)
+        except:
+            # Nếu không được, chỉ cập nhật current_pos
+            pass
+    
+    @property
+    def volume(self) -> float:
+        return self._volume
+    
+    @volume.setter
+    def volume(self, value: float) -> None:
+        self._volume = max(0.0, min(1.0, value))
+        if PYGAME_AVAILABLE:
+            pygame.mixer.music.set_volume(self._volume)
+    
+    def get_pos(self) -> float:
+        """Lấy vị trí hiện tại (giây)"""
+        if not PYGAME_AVAILABLE:
+            return 0
+        return pygame.mixer.music.get_pos() / 1000.0
+    
+    def is_active(self) -> bool:
+        if not PYGAME_AVAILABLE:
+            return False
+        return pygame.mixer.music.get_busy()
+    
+    def _get_duration(self, path: str) -> float:
+        """Ước tính duration - để chính xác cần mutagen"""
+        try:
+            # Fallback: estimate from file size
+            size = os.path.getsize(path)
+            # Giả sử bitrate 192kbps
+            return size / (192 * 1000 / 8)
+        except:
+            return 180.0  # Default 3 phút
+
+
+# ==================== VIDEO PLAYER ====================
+class VideoPlayer:
+    """Video player hiển thị trong Canvas chính"""
+    
+    def __init__(self, canvas):
+        self.canvas = canvas  # Canvas để hiển thị video (vinyl)
+        self.video_cap = None
+        self.is_playing = False
+        self.is_paused = False
+        self.fps = 30
+        self.video_path = None
+        self.update_id = None
+        self.video_image_id = None
+    
+    def open(self, video_path: str):
+        """Mở video"""
+        if not VIDEO_AVAILABLE or not self.canvas:
+            return
+        
+        self.video_path = video_path
+        
+        # Load video
+        self.video_cap = cv2.VideoCapture(video_path)
+        if not self.video_cap.isOpened():
+            print("Error opening video")
+            return
+        
+        self.fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 30
+        self.play()
+    
+    def play(self):
+        """Phát video"""
+        if self.video_cap is None:
+            return
+        
+        self.is_playing = True
+        self.is_paused = False
+        self._update_frame()
+    
+    def pause(self):
+        """Tạm dừng video"""
+        self.is_paused = True
+        if self.update_id:
+            self.canvas.after_cancel(self.update_id)
+            self.update_id = None
+    
+    def resume(self):
+        """Tiếp tục video"""
+        if self.is_paused:
+            self.is_paused = False
+            self._update_frame()
+    
+    def stop(self):
+        """Dừng video"""
+        self.is_playing = False
+        if self.update_id:
+            try:
+                self.canvas.after_cancel(self.update_id)
+            except:
+                pass
+            self.update_id = None
+        if self.video_cap:
+            self.video_cap.release()
+            self.video_cap = None
+        
+        # Xóa video image khỏi canvas
+        if self.video_image_id:
+            self.canvas.delete(self.video_image_id)
+            self.video_image_id = None
+    
+    def seek(self, position: float):
+        """Nhảy đến vị trí (giây)"""
+        if not self.video_cap or not self.video_cap.isOpened() or not self.canvas:
+            return
+        
+        try:
+            # Hủy scheduled update hiện tại
+            if self.update_id:
+                try:
+                    self.canvas.after_cancel(self.update_id)
+                except:
+                    pass
+                self.update_id = None
+            
+            # Seek đến frame mới
+            frame_number = int(position * self.fps)
+            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_number))
+            
+            # Đọc và hiển thị frame ngay lập tức
+            ret, frame = self.video_cap.read()
+            if ret:
+                # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.resize(frame, (280, 280))
+                
+                # Convert to PhotoImage
+                image = Image.fromarray(frame)
+                photo = ImageTk.PhotoImage(image=image)
+                
+                # Xóa image cũ nếu có
+                if self.video_image_id:
+                    self.canvas.delete(self.video_image_id)
+                
+                # Hiển thị image ở giữa canvas
+                self.video_image_id = self.canvas.create_image(
+                    140, 140,
+                    image=photo, anchor=tk.CENTER
+                )
+                self.canvas.photo = photo  # Keep a reference
+                
+                # Tiếp tục update nếu đang playing
+                if self.is_playing and not self.is_paused:
+                    delay = int(1000 / self.fps)
+                    self.update_id = self.canvas.after(delay, self._update_frame)
+        except Exception as e:
+            print(f"Video seek error: {e}")
+    
+    def _update_frame(self):
+        """Cập nhật frame video trên Canvas"""
+        if not self.is_playing or self.is_paused or self.video_cap is None or not self.canvas:
+            return
+        
+        ret, frame = self.video_cap.read()
+        if ret:
+            # Convert BGR to RGB
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Resize để fit canvas (280x280)
+            canvas_width = 280
+            canvas_height = 280
+            frame = cv2.resize(frame, (canvas_width, canvas_height))
+            
+            # Convert to PhotoImage
+            image = Image.fromarray(frame)
+            photo = ImageTk.PhotoImage(image=image)
+            
+            # Xóa image cũ nếu có
+            if self.video_image_id:
+                self.canvas.delete(self.video_image_id)
+            
+            # Hiển thị image ở giữa canvas
+            self.video_image_id = self.canvas.create_image(
+                canvas_width // 2, canvas_height // 2,
+                image=photo, anchor=tk.CENTER
+            )
+            self.canvas.photo = photo  # Keep a reference
+            
+            # Schedule next frame
+            delay = int(1000 / self.fps)
+            self.update_id = self.canvas.after(delay, self._update_frame)
+        else:
+            # Video ended
+            self.stop()
+    
+    def close(self):
+        """Đóng video"""
+        self.stop()
+
+
+# ==================== CUSTOM WIDGETS ====================
+class GlowButton(tk.Canvas):
+    """Button với hiệu ứng glow"""
+    
+    def __init__(self, parent, text="", icon="", command=None, 
+                 width=50, height=50, bg=Theme.BG_CARD, 
+                 fg=Theme.ACCENT_PRIMARY, **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                        bg=Theme.BG_DARK, highlightthickness=0, **kwargs)
+        
+        self.command = command
+        self.fg_color = fg
+        self.bg_color = bg
+        self.text = text
+        self.icon = icon
+        self.width = width
+        self.height = height
+        self.is_hovered = False
+        
+        self._draw()
+        
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+    
+    def _draw(self):
+        self.delete("all")
+        
+        # Background circle/rounded rect
+        padding = 4
+        color = Theme.BG_HOVER if self.is_hovered else self.bg_color
+        
+        if self.width == self.height:
+            # Circle button
+            self.create_oval(padding, padding, 
+                           self.width - padding, self.height - padding,
+                           fill=color, outline=self.fg_color if self.is_hovered else "",
+                           width=2)
+        else:
+            # Rounded rectangle
+            self._create_rounded_rect(padding, padding, 
+                                     self.width - padding, self.height - padding,
+                                     radius=10, fill=color,
+                                     outline=self.fg_color if self.is_hovered else "")
+        
+        # Text/Icon
+        display = self.icon if self.icon else self.text
+        self.create_text(self.width // 2, self.height // 2,
+                        text=display, fill=self.fg_color,
+                        font=("Segoe UI Symbol", 14, "bold"))
+    
+    def _create_rounded_rect(self, x1, y1, x2, y2, radius=10, **kwargs):
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+    
+    def _on_enter(self, event):
+        self.is_hovered = True
+        self._draw()
+    
+    def _on_leave(self, event):
+        self.is_hovered = False
+        self._draw()
+    
+    def _on_click(self, event):
+        if self.command:
+            self.command()
+
+
+class ModernSlider(tk.Canvas):
+    """Slider với thiết kế hiện đại"""
+    
+    def __init__(self, parent, width=300, height=20, 
+                 min_val=0, max_val=100, value=0,
+                 command=None, **kwargs):
+        super().__init__(parent, width=width, height=height,
+                        bg=Theme.BG_DARK, highlightthickness=0, **kwargs)
+        
+        self.min_val = min_val
+        self.max_val = max_val
+        self._value = value
+        self.command = command
+        self.width = width
+        self.height = height
+        
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<B1-Motion>", self._on_drag)
+        
+        self._draw()
+    
+    @property
+    def value(self) -> float:
+        return self._value
+    
+    @value.setter
+    def value(self, val: float):
+        self._value = max(self.min_val, min(self.max_val, val))
+        self._draw()
+    
+    def _draw(self):
+        self.delete("all")
+        
+        padding = 8
+        track_height = 6
+        track_y = self.height // 2 - track_height // 2
+        
+        # Track background
+        self.create_rectangle(padding, track_y, 
+                            self.width - padding, track_y + track_height,
+                            fill=Theme.BG_HOVER, outline="")
+        
+        # Progress
+        progress_ratio = (self._value - self.min_val) / (self.max_val - self.min_val) if self.max_val > self.min_val else 0
+        progress_width = (self.width - 2 * padding) * progress_ratio
+        
+        if progress_width > 0:
+            # Gradient effect với nhiều rectangles
+            self.create_rectangle(padding, track_y,
+                                padding + progress_width, track_y + track_height,
+                                fill=Theme.ACCENT_PRIMARY, outline="")
+        
+        # Knob
+        knob_x = padding + progress_width
+        knob_radius = 8
+        self.create_oval(knob_x - knob_radius, self.height // 2 - knob_radius,
+                        knob_x + knob_radius, self.height // 2 + knob_radius,
+                        fill=Theme.ACCENT_PRIMARY, outline=Theme.TEXT_PRIMARY, width=2)
+    
+    def _on_click(self, event):
+        self._update_value(event.x)
+    
+    def _on_drag(self, event):
+        self._update_value(event.x)
+    
+    def _update_value(self, x):
+        padding = 8
+        ratio = (x - padding) / (self.width - 2 * padding)
+        ratio = max(0, min(1, ratio))
+        self._value = self.min_val + ratio * (self.max_val - self.min_val)
+        self._draw()
+        
+        if self.command:
+            self.command(self._value)
+
+
+# ==================== MAIN APPLICATION ====================
+class MelodifyApp:
+    """Ứng dụng nghe nhạc chính"""
+    
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("🎵 Melodify - Music Player")
+        self.root.geometry("900x700")
+        self.root.configure(bg=Theme.BG_DARK)
+        self.root.minsize(800, 600)
+        
+        # Icon nếu có
+        try:
+            self.root.iconbitmap("icon.ico")
+        except:
+            pass
+        
+        # Core components
+        self.playlist = PlaylistLinkedList()
+        self.favorites = PlaylistLinkedList()  # Linked List thứ 2 cho favorites
+        self.engine = MusicEngine()
+        self.video_player = None  # Sẽ khởi tạo sau khi tạo UI
+        
+        # State
+        self.repeat_mode = 0  # 0: off, 1: all, 2: one
+        self.shuffle_mode = False
+        self.update_thread = None
+        self.running = True
+        
+        # Stats
+        self.stats = {
+            "total_played": 0,
+            "total_time": 0.0,
+            "last_played": None
+        }
+        
+        # File paths
+        self.data_dir = os.path.join(os.path.dirname(__file__), '.melodify_data')
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+        
+        self.playlist_file = os.path.join(self.data_dir, 'playlist.json')
+        self.favorites_file = os.path.join(self.data_dir, 'favorites.json')
+        self.stats_file = os.path.join(self.data_dir, 'stats.json')
+        
+        # Load saved data
+        self._load_saved_data()
+        
+        # Build UI
+        self._create_styles()
+        self._create_ui()
+        self._start_update_loop()
+        
+        # Keyboard bindings
+        self.root.bind("<space>", lambda e: self.toggle_play())
+        self.root.bind("<Left>", lambda e: self.previous_song())
+        self.root.bind("<Right>", lambda e: self.next_song())
+        
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        
+        # Menu bar
+        self._create_menu()
+    
+    def _create_styles(self):
+        """Tạo styles cho ttk widgets"""
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Listbox style (dùng Treeview thay thế)
+        style.configure("Playlist.Treeview",
+                       background=Theme.BG_CARD,
+                       foreground=Theme.TEXT_PRIMARY,
+                       fieldbackground=Theme.BG_CARD,
+                       borderwidth=0,
+                       font=("Segoe UI", 11))
+        
+        style.configure("Playlist.Treeview.Heading",
+                       background=Theme.BG_DARK,
+                       foreground=Theme.ACCENT_PRIMARY,
+                       font=("Segoe UI", 10, "bold"))
+        
+        style.map("Playlist.Treeview",
+                 background=[("selected", Theme.BG_HOVER)],
+                 foreground=[("selected", Theme.ACCENT_PRIMARY)])
+    
+    def _create_menu(self):
+        """Tạo menu bar"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Save Playlist", command=self.save_playlist)
+        file_menu.add_command(label="Load Playlist", command=self.load_playlist)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export Playlist...", command=self.export_playlist)
+        file_menu.add_command(label="Import Playlist...", command=self.import_playlist)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        
+        # Playlist menu
+        pl_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Playlist", menu=pl_menu)
+        pl_menu.add_command(label="🔍 Search...", command=self.search_song, accelerator="Ctrl+F")
+        pl_menu.add_command(label="❤️ Favorites", command=self.show_favorites)
+        pl_menu.add_separator()
+        pl_menu.add_command(label="📊 Statistics", command=self.show_stats)
+        
+        # Linked List menu - THỂ HIỆN CỐT LÕI ĐỀ BÀI
+        ll_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="🔗 Linked List", menu=ll_menu)
+        ll_menu.add_command(label="📊 Visualization", command=self.show_linked_list_visualization, accelerator="Ctrl+L")
+        ll_menu.add_command(label="⚙️ Operations", command=self.show_linked_list_operations)
+        ll_menu.add_command(label="ℹ️ Info", command=self.show_linked_list_info)
+        ll_menu.add_separator()
+        ll_menu.add_command(label="➕ Insert at Position", command=self.insert_song_at_position)
+        ll_menu.add_command(label="➖ Delete at Position", command=self.delete_song_at_position)
+        
+        # Bind shortcut
+        self.root.bind("<Control-l>", lambda e: self.show_linked_list_visualization())
+        self.root.bind("<Control-L>", lambda e: self.show_linked_list_visualization())
+        
+        # Bind shortcuts
+        self.root.bind("<Control-f>", lambda e: self.search_song())
+        self.root.bind("<Control-F>", lambda e: self.search_song())
+    
+    def _load_saved_data(self):
+        """Load dữ liệu đã lưu"""
+        # Load playlist
+        saved_playlist = PlaylistLinkedList.load_from_file(self.playlist_file)
+        if saved_playlist and not saved_playlist.is_empty:
+            self.playlist = saved_playlist
+        
+        # Load favorites
+        saved_favs = PlaylistLinkedList.load_from_file(self.favorites_file)
+        if saved_favs and not saved_favs.is_empty:
+            self.favorites = saved_favs
+        
+        # Load stats
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, 'r', encoding='utf-8') as f:
+                    self.stats = json.load(f)
+            except:
+                pass
+    
+    def _save_all_data(self):
+        """Lưu tất cả dữ liệu"""
+        self.playlist.save_to_file(self.playlist_file)
+        self.favorites.save_to_file(self.favorites_file)
+        
+        # Save stats
+        try:
+            with open(self.stats_file, 'w', encoding='utf-8') as f:
+                json.dump(self.stats, f, indent=2)
+        except:
+            pass
+    
+    def _create_ui(self):
+        """Xây dựng giao diện"""
+        
+        # ===== HEADER =====
+        header = tk.Frame(self.root, bg=Theme.BG_DARK, height=80)
+        header.pack(fill=tk.X, padx=20, pady=10)
+        header.pack_propagate(False)
+        
+        # Logo
+        logo_frame = tk.Frame(header, bg=Theme.BG_DARK)
+        logo_frame.pack(side=tk.LEFT)
+        
+        tk.Label(logo_frame, text="🎵", font=("Segoe UI Symbol", 32),
+                bg=Theme.BG_DARK, fg=Theme.ACCENT_PRIMARY).pack(side=tk.LEFT)
+        
+        title_frame = tk.Frame(logo_frame, bg=Theme.BG_DARK)
+        title_frame.pack(side=tk.LEFT, padx=10)
+        
+        tk.Label(title_frame, text="MELODIFY", 
+                font=("Segoe UI", 24, "bold"),
+                bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY).pack(anchor=tk.W)
+        tk.Label(title_frame, text="Powered by Linked List", 
+                font=("Segoe UI", 10),
+                bg=Theme.BG_DARK, fg=Theme.TEXT_MUTED).pack(anchor=tk.W)
+        
+        # Add buttons frame
+        add_buttons_frame = tk.Frame(header, bg=Theme.BG_DARK)
+        add_buttons_frame.pack(side=tk.RIGHT, padx=10)
+        
+        # Add songs button
+        add_btn = tk.Button(add_buttons_frame, text="➕ Add Songs", 
+                           font=("Segoe UI", 11, "bold"),
+                           bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
+                           activebackground=Theme.ACCENT_SECONDARY,
+                           activeforeground=Theme.TEXT_PRIMARY,
+                           border=0, padx=20, pady=8,
+                           cursor="hand2",
+                           command=self.add_songs)
+        add_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Add from YouTube button
+        yt_btn = tk.Button(add_buttons_frame, text="📺 Add from YouTube", 
+                          font=("Segoe UI", 11, "bold"),
+                          bg=Theme.ACCENT_SECONDARY, fg=Theme.TEXT_PRIMARY,
+                          activebackground=Theme.ACCENT_TERTIARY,
+                          activeforeground=Theme.TEXT_PRIMARY,
+                          border=0, padx=20, pady=8,
+                          cursor="hand2",
+                          command=self.add_from_youtube)
+        yt_btn.pack(side=tk.LEFT, padx=5)
+        
+        # ===== MAIN CONTENT =====
+        content = tk.Frame(self.root, bg=Theme.BG_DARK)
+        content.pack(fill=tk.BOTH, expand=True, padx=20)
+        
+        # Left: Playlist
+        playlist_frame = tk.Frame(content, bg=Theme.BG_CARD)
+        playlist_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # Playlist header
+        pl_header = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
+        pl_header.pack(fill=tk.X, padx=15, pady=10)
+        
+        tk.Label(pl_header, text="📋 PLAYLIST", 
+                font=("Segoe UI", 14, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack(side=tk.LEFT)
+        
+        self.playlist_count = tk.Label(pl_header, text="0 songs",
+                                       font=("Segoe UI", 10),
+                                       bg=Theme.BG_CARD, fg=Theme.TEXT_MUTED)
+        self.playlist_count.pack(side=tk.RIGHT)
+        
+        # Playlist listbox (using Treeview)
+        tree_frame = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        self.playlist_tree = ttk.Treeview(tree_frame, style="Playlist.Treeview",
+                                         columns=("title", "artist"),
+                                         show="headings", selectmode="browse")
+        
+        self.playlist_tree.heading("title", text="Title")
+        self.playlist_tree.heading("artist", text="Artist")
+        self.playlist_tree.column("title", width=250)
+        self.playlist_tree.column("artist", width=150)
+        
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, 
+                                 command=self.playlist_tree.yview)
+        self.playlist_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.playlist_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.playlist_tree.bind("<Double-1>", self._on_song_double_click)
+        self.playlist_tree.bind("<Delete>", self._on_delete_song)
+        self.playlist_tree.bind("<Button-3>", self._on_right_click)  # Right-click menu
+        
+        # Playlist actions
+        pl_actions = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
+        pl_actions.pack(fill=tk.X, padx=10, pady=10)
+        
+        for text, cmd in [("🔍 Search", self.search_song),
+                         ("❤️ Favorites", self.show_favorites),
+                         ("🗑️ Clear", self.clear_playlist), 
+                         ("🔀 Shuffle", self.shuffle_playlist)]:
+            btn = tk.Button(pl_actions, text=text,
+                           font=("Segoe UI Symbol", 10),
+                           bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                           activebackground=Theme.ACCENT_TERTIARY,
+                           border=0, padx=15, pady=5,
+                           cursor="hand2", command=cmd)
+            btn.pack(side=tk.LEFT, padx=5)
+        
+        # Right: Now Playing
+        now_playing = tk.Frame(content, bg=Theme.BG_CARD, width=320)
+        now_playing.pack(side=tk.RIGHT, fill=tk.Y)
+        now_playing.pack_propagate(False)
+        
+        # Album art placeholder
+        art_frame = tk.Frame(now_playing, bg=Theme.BG_DARK, 
+                            width=280, height=280)
+        art_frame.pack(pady=20, padx=20)
+        art_frame.pack_propagate(False)
+        
+        # Vinyl animation / Video display
+        self.vinyl = tk.Canvas(art_frame, width=280, height=280,
+                              bg=Theme.BG_DARK, highlightthickness=0)
+        self.vinyl.pack()
+        self._draw_vinyl()
+        
+        # Khởi tạo video player với canvas
+        if VIDEO_AVAILABLE:
+            self.video_player = VideoPlayer(self.vinyl)
+        
+        # Song info
+        info_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
+        info_frame.pack(fill=tk.X, padx=20)
+        
+        self.song_title = tk.Label(info_frame, text="No song playing",
+                                  font=("Segoe UI", 16, "bold"),
+                                  bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                                  wraplength=280)
+        self.song_title.pack()
+        
+        self.song_artist = tk.Label(info_frame, text="Add songs to start",
+                                   font=("Segoe UI", 12),
+                                   bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY)
+        self.song_artist.pack()
+        
+        # Progress
+        progress_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
+        progress_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        # Progress slider - sẽ cập nhật max_val khi có bài hát
+        self.progress_slider = ModernSlider(progress_frame, width=280, height=24,
+                                           min_val=0, max_val=100, value=0,
+                                           command=self._on_seek)
+        self.progress_slider.pack()
+        
+        time_frame = tk.Frame(progress_frame, bg=Theme.BG_CARD)
+        time_frame.pack(fill=tk.X, pady=5)
+        
+        self.time_current = tk.Label(time_frame, text="0:00",
+                                    font=("Segoe UI", 10),
+                                    bg=Theme.BG_CARD, fg=Theme.TEXT_MUTED)
+        self.time_current.pack(side=tk.LEFT)
+        
+        self.time_total = tk.Label(time_frame, text="0:00",
+                                  font=("Segoe UI", 10),
+                                  bg=Theme.BG_CARD, fg=Theme.TEXT_MUTED)
+        self.time_total.pack(side=tk.RIGHT)
+        
+        # ===== CONTROLS =====
+        controls_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
+        controls_frame.pack(pady=10)
+        
+        # Shuffle button
+        self.shuffle_btn = GlowButton(controls_frame, icon="🔀",
+                                     width=40, height=40,
+                                     fg=Theme.TEXT_MUTED,
+                                     command=self.toggle_shuffle)
+        self.shuffle_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Previous
+        GlowButton(controls_frame, icon="⏮️",
+                  width=50, height=50,
+                  command=self.previous_song).pack(side=tk.LEFT, padx=5)
+        
+        # Play/Pause
+        self.play_btn = GlowButton(controls_frame, icon="▶️",
+                                  width=70, height=70,
+                                  fg=Theme.ACCENT_PRIMARY,
+                                  command=self.toggle_play)
+        self.play_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Next
+        GlowButton(controls_frame, icon="⏭️",
+                  width=50, height=50,
+                  command=self.next_song).pack(side=tk.LEFT, padx=5)
+        
+        # Repeat button
+        self.repeat_btn = GlowButton(controls_frame, icon="🔁",
+                                    width=40, height=40,
+                                    fg=Theme.TEXT_MUTED,
+                                    command=self.toggle_repeat)
+        self.repeat_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Volume
+        vol_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
+        vol_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        tk.Label(vol_frame, text="🔊",
+                font=("Segoe UI Symbol", 14),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY).pack(side=tk.LEFT)
+        
+        self.volume_slider = ModernSlider(vol_frame, width=200, height=20,
+                                         min_val=0, max_val=100, value=70,
+                                         command=self._on_volume_change)
+        self.volume_slider.pack(side=tk.LEFT, padx=10)
+        
+        # ===== STATUS BAR =====
+        status = tk.Frame(self.root, bg=Theme.BG_CARD, height=30)
+        status.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        # Hiển thị MP4 support status
+        if PYDUB_AVAILABLE and FFMPEG_AVAILABLE:
+            video_status = "✅ Video" if VIDEO_AVAILABLE else "✅ MP4 audio"
+            mp4_status = video_status
+        elif PYDUB_AVAILABLE:
+            mp4_status = "⚠️ MP4 (restart terminal for FFmpeg)"
+        else:
+            mp4_status = "⚠️ MP4 (need pydub+ffmpeg)"
+        self.status_label = tk.Label(status, 
+                                    text=f"💡 Tip: Double-click to play | Space to pause | {mp4_status}",
+                                    font=("Segoe UI", 9),
+                                    bg=Theme.BG_CARD, fg=Theme.TEXT_MUTED)
+        self.status_label.pack(side=tk.LEFT, padx=10)
+        
+        # Linked List info
+        self.ll_info = tk.Label(status,
+                               text="🔗 Linked List: Empty",
+                               font=("Segoe UI", 9),
+                               bg=Theme.BG_CARD, fg=Theme.ACCENT_TERTIARY)
+        self.ll_info.pack(side=tk.RIGHT, padx=10)
+    
+    def _draw_vinyl(self, rotation=0):
+        """Vẽ đĩa vinyl với animation"""
+        self.vinyl.delete("all")
+        cx, cy = 140, 140
+        
+        # Outer ring
+        self.vinyl.create_oval(10, 10, 270, 270,
+                              fill=Theme.BG_CARD, outline=Theme.TEXT_MUTED, width=2)
+        
+        # Vinyl grooves
+        for r in range(30, 120, 8):
+            self.vinyl.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                  outline=Theme.TEXT_MUTED, width=1)
+        
+        # Center label
+        self.vinyl.create_oval(cx - 40, cy - 40, cx + 40, cy + 40,
+                              fill=Theme.ACCENT_PRIMARY, outline="")
+        self.vinyl.create_oval(cx - 8, cy - 8, cx + 8, cy + 8,
+                              fill=Theme.BG_DARK, outline="")
+        
+        # Reflection effect
+        import math
+        angle = math.radians(rotation)
+        x1 = cx + 80 * math.cos(angle)
+        y1 = cy + 80 * math.sin(angle)
+        x2 = cx + 100 * math.cos(angle)
+        y2 = cy + 100 * math.sin(angle)
+        self.vinyl.create_line(x1, y1, x2, y2, fill=Theme.TEXT_MUTED, width=3)
+    
+    # ==================== ACTIONS ====================
+    
+    def add_songs(self):
+        """Thêm bài hát vào playlist"""
+        files = filedialog.askopenfilenames(
+            title="Select Music Files",
+            filetypes=[
+                ("Audio/Video Files", "*.mp3 *.wav *.ogg *.flac *.mp4 *.m4a *.aac *.wma"),
+                ("MP3", "*.mp3"),
+                ("MP4/M4A", "*.mp4 *.m4a"),
+                ("WAV", "*.wav"),
+                ("All Files", "*.*")
+            ]
+        )
+        
+        if files:
+            for path in files:
+                song = Song.from_path(path)
+                self.playlist.append(song)
+            
+            self._refresh_playlist_view()
+            self._update_status(f"✅ Added {len(files)} song(s)")
+    
+    # ==================== YOUTUBE SUPPORT ====================
+    
+    def _parse_youtube_url(self, url: str) -> Optional[str]:
+        """Parse YouTube URL và trả về video ID"""
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
+            r'youtube\.com\/playlist\?list=([a-zA-Z0-9_-]+)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _is_youtube_url(self, url: str) -> bool:
+        """Kiểm tra xem URL có phải YouTube không"""
+        youtube_patterns = [
+            'youtube.com',
+            'youtu.be',
+            'youtube.com/embed',
+            'youtube.com/playlist'
+        ]
+        return any(pattern in url.lower() for pattern in youtube_patterns)
+    
+    def _download_youtube(self, url: str, progress_callback=None) -> Optional[str]:
+        """Download YouTube video/audio và trả về đường dẫn file"""
+        if not YT_DLP_AVAILABLE:
+            messagebox.showerror("Error", "yt-dlp not installed. Run: pip install yt-dlp")
+            return None
+        
+        try:
+            video_id = self._parse_youtube_url(url)
+            if not video_id:
+                messagebox.showerror("Error", "Invalid YouTube URL")
+                return None
+            
+            # Cấu hình yt-dlp - tối ưu để tránh SABR streaming warnings
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',  # Ưu tiên video+audio, giới hạn 1080p
+                'outtmpl': os.path.join(self.engine._youtube_dir, '%(title)s.%(ext)s'),
+                'quiet': True,  # Giảm output
+                'no_warnings': True,  # Bỏ qua warnings
+                'extract_flat': False,
+                'noplaylist': True,  # Chỉ download single video
+                'ignoreerrors': False,
+                # Tránh SABR streaming issues
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web'],  # Tránh web_safari client
+                    }
+                },
+            }
+            
+            if progress_callback:
+                ydl_opts['progress_hooks'] = [progress_callback]
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Lấy thông tin video
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'Unknown')
+                duration = info.get('duration', 0)
+                
+                # Download
+                ydl.download([url])
+                
+                # Tìm file đã download
+                # yt-dlp có thể đổi tên file, nên tìm file mới nhất trong thư mục
+                files = os.listdir(self.engine._youtube_dir)
+                # Lọc file có extension video/audio
+                video_files = [f for f in files if os.path.splitext(f)[1].lower() in ['.mp4', '.webm', '.mkv', '.m4a']]
+                
+                if video_files:
+                    # Lấy file mới nhất
+                    video_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.engine._youtube_dir, x)), reverse=True)
+                    file_path = os.path.join(self.engine._youtube_dir, video_files[0])
+                    
+                    # Tạo Song object với thông tin YouTube
+                    song = Song(
+                        title=title,
+                        artist=info.get('uploader', 'YouTube'),
+                        path=file_path,
+                        duration=duration
+                    )
+                    return file_path
+            
+            return None
+        except Exception as e:
+            print(f"Error downloading YouTube: {e}")
+            messagebox.showerror("Error", f"Failed to download YouTube video: {str(e)}")
+            return None
+    
+    def add_from_youtube(self):
+        """Thêm bài hát từ YouTube URL"""
+        if not YT_DLP_AVAILABLE:
+            messagebox.showerror("YouTube Support", 
+                               "yt-dlp not installed.\n\n"
+                               "Please install: pip install yt-dlp\n\n"
+                               "YouTube support requires yt-dlp library.")
+            return
+        
+        # Dialog để nhập YouTube URL
+        url = simpledialog.askstring(
+            "Add from YouTube",
+            "Enter YouTube URL (video or playlist):\n\n"
+            "Examples:\n"
+            "• https://www.youtube.com/watch?v=VIDEO_ID\n"
+            "• https://youtu.be/VIDEO_ID\n"
+            "• https://www.youtube.com/playlist?list=PLAYLIST_ID"
+        )
+        
+        if not url:
+            return
+        
+        # Kiểm tra URL hợp lệ
+        if not self._is_youtube_url(url):
+            messagebox.showerror("Invalid URL", "Please enter a valid YouTube URL")
+            return
+        
+        # Kiểm tra playlist hay single video
+        is_playlist = 'playlist?list=' in url.lower()
+        
+        if is_playlist:
+            # Xử lý playlist
+            self._add_youtube_playlist(url)
+        else:
+            # Xử lý single video
+            self._add_youtube_video(url)
+    
+    def _add_youtube_video(self, url: str):
+        """Thêm một video YouTube vào playlist"""
+        # Progress window
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Downloading YouTube Video")
+        progress_window.geometry("400x150")
+        progress_window.configure(bg=Theme.BG_DARK)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+        
+        status_label = tk.Label(progress_window, text="Downloading...",
+                               font=("Segoe UI", 11),
+                               bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY)
+        status_label.pack(pady=20)
+        
+        progress_var = tk.StringVar(value="Starting download...")
+        progress_label = tk.Label(progress_window, textvariable=progress_var,
+                                 font=("Segoe UI", 9),
+                                 bg=Theme.BG_DARK, fg=Theme.TEXT_SECONDARY)
+        progress_label.pack(pady=10)
+        
+        def update_progress(d):
+            if d['status'] == 'downloading':
+                if 'total_bytes' in d:
+                    percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                    progress_var.set(f"Downloading: {percent:.1f}%")
+                else:
+                    progress_var.set("Downloading...")
+            elif d['status'] == 'finished':
+                progress_var.set("Processing...")
+            progress_window.update()
+        
+        def download_thread():
+            try:
+                file_path = self._download_youtube(url, update_progress)
+                progress_window.after(0, lambda: self._on_youtube_downloaded(file_path, url, progress_window))
+            except Exception as e:
+                progress_window.after(0, lambda: self._on_youtube_error(str(e), progress_window))
+        
+        threading.Thread(target=download_thread, daemon=True).start()
+    
+    def _add_youtube_playlist(self, url: str):
+        """Thêm playlist YouTube vào playlist"""
+        if not YT_DLP_AVAILABLE:
+            return
+        
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'playlistend': 50,  # Giới hạn 50 videos
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web'],  # Tránh web_safari client
+                    }
+                },
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                entries = info.get('entries', [])
+                
+                if not entries:
+                    messagebox.showinfo("Playlist", "Playlist is empty or could not be accessed")
+                    return
+                
+                # Hỏi user có muốn download tất cả không
+                count = len(entries)
+                if count > 10:
+                    if not messagebox.askyesno("Large Playlist", 
+                                              f"Playlist has {count} videos.\n\n"
+                                              f"Download all? (This may take a while)"):
+                        return
+                
+                # Download từng video
+                progress_window = tk.Toplevel(self.root)
+                progress_window.title("Downloading YouTube Playlist")
+                progress_window.geometry("400x150")
+                progress_window.configure(bg=Theme.BG_DARK)
+                progress_window.transient(self.root)
+                progress_window.grab_set()
+                
+                status_label = tk.Label(progress_window, text=f"Downloading playlist ({count} videos)...",
+                                       font=("Segoe UI", 11),
+                                       bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY)
+                status_label.pack(pady=20)
+                
+                progress_var = tk.StringVar(value="Starting...")
+                progress_label = tk.Label(progress_window, textvariable=progress_var,
+                                         font=("Segoe UI", 9),
+                                         bg=Theme.BG_DARK, fg=Theme.TEXT_SECONDARY)
+                progress_label.pack(pady=10)
+                
+                def download_playlist_thread():
+                    downloaded = 0
+                    for i, entry in enumerate(entries):
+                        if entry is None:
+                            continue
+                        
+                        video_url = f"https://www.youtube.com/watch?v={entry.get('id', '')}"
+                        progress_window.after(0, lambda i=i+1, total=count: 
+                                            progress_var.set(f"Downloading video {i}/{total}..."))
+                        
+                        try:
+                            file_path = self._download_youtube(video_url)
+                            if file_path:
+                                downloaded += 1
+                        except:
+                            pass
+                    
+                    progress_window.after(0, lambda: self._on_playlist_downloaded(downloaded, count, progress_window))
+                
+                threading.Thread(target=download_playlist_thread, daemon=True).start()
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process playlist: {str(e)}")
+    
+    def _on_youtube_downloaded(self, file_path: Optional[str], url: str, progress_window):
+        """Xử lý sau khi download YouTube video xong"""
+        progress_window.destroy()
+        
+        if file_path:
+            # Tạo Song từ file đã download
+            song = Song.from_path(file_path)
+            # Lấy thông tin từ YouTube URL
+            if YT_DLP_AVAILABLE:
+                try:
+                    ydl_opts_info = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['android', 'web'],
+                            }
+                        },
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        song.title = info.get('title', song.title)
+                        song.artist = info.get('uploader', 'YouTube')
+                        song.duration = info.get('duration', 0)
+                        song.youtube_url = url  # Lưu YouTube URL
+                except:
+                    pass
+            
+            self.playlist.append(song)
+            self._refresh_playlist_view()
+            self._update_status(f"✅ Added YouTube video: {song.title}")
+        else:
+            self._update_status("❌ Failed to download YouTube video")
+    
+    def _on_youtube_error(self, error_msg: str, progress_window):
+        """Xử lý lỗi download YouTube"""
+        progress_window.destroy()
+        messagebox.showerror("Download Error", f"Failed to download:\n{error_msg}")
+        self._update_status("❌ YouTube download failed")
+    
+    def _on_playlist_downloaded(self, downloaded: int, total: int, progress_window):
+        """Xử lý sau khi download playlist xong"""
+        progress_window.destroy()
+        self._refresh_playlist_view()
+        self._update_status(f"✅ Downloaded {downloaded}/{total} videos from YouTube playlist")
+    
+    def _refresh_playlist_view(self):
+        """Cập nhật Treeview từ Linked List"""
+        # Xóa cũ
+        for item in self.playlist_tree.get_children():
+            self.playlist_tree.delete(item)
+        
+        # Thêm mới từ linked list
+        for i, song in enumerate(self.playlist):
+            # Thêm icon YouTube nếu có YouTube URL
+            title_display = song.title
+            if hasattr(song, 'youtube_url') and song.youtube_url:
+                title_display = "📺 " + title_display
+            
+            item_id = self.playlist_tree.insert("", tk.END,
+                                                values=(title_display, song.artist))
+            
+            # Highlight current song
+            if song == self.playlist.current_song:
+                self.playlist_tree.selection_set(item_id)
+                self.playlist_tree.see(item_id)
+        
+        # Update count
+        self.playlist_count.config(text=f"{len(self.playlist)} songs")
+        self._update_ll_info()
+    
+    def _on_song_double_click(self, event):
+        """Xử lý double-click vào bài hát"""
+        selection = self.playlist_tree.selection()
+        if selection:
+            item = selection[0]
+            index = self.playlist_tree.index(item)
+            self.playlist.go_to(index)
+            self.play_current_song()
+    
+    def _on_delete_song(self, event):
+        """Xóa bài hát được chọn"""
+        selection = self.playlist_tree.selection()
+        if selection:
+            item = selection[0]
+            index = self.playlist_tree.index(item)
+            song = self.playlist.remove_at(index)
+            if song:
+                self._refresh_playlist_view()
+                self._update_status(f"🗑️ Removed: {song.title}")
+    
+    def toggle_play(self):
+        """Play/Pause"""
+        if self.playlist.is_empty:
+            return
+        
+        if not self.engine.is_playing:
+            if not self.engine.is_paused:
+                self.play_current_song()
+            else:
+                self.engine.play()
+                # Resume video
+                if self.video_player:
+                    self.video_player.resume()
+                self.play_btn.icon = "⏸️"
+                self.play_btn._draw()
+        else:
+            self.engine.pause()
+            # Pause video
+            if self.video_player:
+                self.video_player.pause()
+            self.play_btn.icon = "▶️"
+            self.play_btn._draw()
+    
+    def next_song(self):
+        """Bài tiếp theo"""
+        if self.playlist.is_empty:
+            return
+        
+        # Dừng engine và video hiện tại
+        self.engine.stop()
+        if self.video_player:
+            self.video_player.stop()
+        
+        if self.shuffle_mode:
+            # Random trong linked list
+            if len(self.playlist) > 1:
+                index = random.randint(0, len(self.playlist) - 1)
+                while index == self.playlist.current_index:
+                    index = random.randint(0, len(self.playlist) - 1)
+                self.playlist.go_to(index)
+            else:
+                # Chỉ có 1 bài, không cần chuyển
+                pass
+        else:
+            next_song = self.playlist.next()
+            if not next_song:
+                # Không có bài tiếp theo
+                self._update_status("⏹️ End of playlist")
+                return
+        
+        self.play_current_song()
+    
+    def previous_song(self):
+        """Bài trước"""
+        if self.playlist.is_empty:
+            return
+        
+        # Dừng engine và video hiện tại
+        self.engine.stop()
+        if self.video_player:
+            self.video_player.stop()
+        
+        prev_song = self.playlist.previous()
+        if not prev_song:
+            # Không có bài trước
+            self._update_status("⏹️ Beginning of playlist")
+            return
+        
+        self.play_current_song()
+    
+    def toggle_shuffle(self):
+        """Bật/tắt shuffle"""
+        self.shuffle_mode = not self.shuffle_mode
+        color = Theme.ACCENT_PRIMARY if self.shuffle_mode else Theme.TEXT_MUTED
+        self.shuffle_btn.fg_color = color
+        self.shuffle_btn._draw()
+        
+        self._update_status(f"🔀 Shuffle: {'ON' if self.shuffle_mode else 'OFF'}")
+    
+    def toggle_repeat(self):
+        """Chuyển chế độ repeat"""
+        self.repeat_mode = (self.repeat_mode + 1) % 3
+        
+        icons = ["🔁", "🔂", "🔂"]  # Off, All, One
+        colors = [Theme.TEXT_MUTED, Theme.ACCENT_PRIMARY, Theme.ACCENT_SECONDARY]
+        
+        self.repeat_btn.icon = icons[self.repeat_mode]
+        self.repeat_btn.fg_color = colors[self.repeat_mode]
+        self.repeat_btn._draw()
+        
+        # Update linked list circular mode
+        self.playlist.circular = (self.repeat_mode == 1)
+        
+        modes = ["OFF", "REPEAT ALL", "REPEAT ONE"]
+        self._update_status(f"🔁 Repeat: {modes[self.repeat_mode]}")
+    
+    def shuffle_playlist(self):
+        """Xáo trộn playlist"""
+        if len(self.playlist) > 1:
+            self.playlist.shuffle()
+            self._refresh_playlist_view()
+            self._update_status("🔀 Playlist shuffled!")
+    
+    def clear_playlist(self):
+        """Xóa toàn bộ playlist"""
+        if self.playlist.is_empty:
+            return
+        
+        if messagebox.askyesno("Clear Playlist", "Are you sure you want to clear the playlist?"):
+            self.engine.stop()
+            if self.video_player:
+                self.video_player.stop()
+            self.playlist.clear()
+            self._refresh_playlist_view()
+            self.song_title.config(text="No song playing")
+            self.song_artist.config(text="Add songs to start")
+            self._draw_vinyl()  # Vẽ lại vinyl
+            self._update_status("🗑️ Playlist cleared")
+    
+    def _on_seek(self, value):
+        """Seek trong bài hát"""
+        if not hasattr(self.engine, 'duration') or not self.engine.duration or self.engine.duration <= 0:
+            return
+        
+        # value từ slider là giây (vì max_val = duration)
+        position_seconds = max(0, min(value, self.engine.duration))
+        
+        # Seek video trước (nếu có)
+        if self.video_player and self.engine._has_video:
+            self.video_player.seek(position_seconds)
+        
+        # Seek audio - pygame không hỗ trợ seek tốt với mọi format
+        # Chỉ cập nhật current_pos để UI đồng bộ
+        if self.engine.is_playing or self.engine.is_paused:
+            self.engine.current_pos = position_seconds
+            # Thử seek nếu có thể (có thể không hoạt động với một số format)
+            if PYGAME_AVAILABLE:
+                try:
+                    # pygame.mixer.music.set_pos() chỉ hoạt động với một số format
+                    pygame.mixer.music.set_pos(position_seconds)
+                except:
+                    # Nếu không được, chỉ cập nhật current_pos
+                    # Note: Seek có thể không hoạt động hoàn hảo với mọi format
+                    pass
+    
+    def _on_volume_change(self, value):
+        """Thay đổi volume"""
+        self.engine.volume = value / 100
+    
+    # ==================== UPDATE LOOP ====================
+    
+    def _start_update_loop(self):
+        """Bắt đầu thread cập nhật UI"""
+        def update():
+            vinyl_rotation = 0
+            while self.running:
+                try:
+                    if self.engine.is_playing and self.engine.is_active():
+                        # Update progress
+                        pos = self.engine.get_pos()
+                        # Cập nhật slider (đảm bảo max_val đã được set)
+                        if self.progress_slider.max_val > 0:
+                            self.progress_slider.value = min(pos, self.progress_slider.max_val)
+                        self.time_current.config(text=self._format_time(pos))
+                        
+                        # Rotate vinyl chỉ khi không có video
+                        if not self.engine._has_video:
+                            vinyl_rotation = (vinyl_rotation + 2) % 360
+                            self._draw_vinyl(vinyl_rotation)
+                    
+                    # Check if song ended
+                    if self.engine.is_playing and not self.engine.is_active():
+                        self.root.after(0, self._on_song_end)
+                    
+                    time.sleep(0.05)
+                except:
+                    break
+        
+        self.update_thread = threading.Thread(target=update, daemon=True)
+        self.update_thread.start()
+    
+    def _on_song_end(self):
+        """Xử lý khi bài hát kết thúc"""
+        # Update total time
+        if self.engine.duration > 0:
+            self.stats["total_time"] = self.stats.get("total_time", 0) + self.engine.duration
+        
+        # Dừng video player
+        if self.video_player:
+            self.video_player.stop()
+        
+        if self.repeat_mode == 2:
+            # Repeat one
+            self.play_current_song()
+        elif self.playlist.has_next():
+            self.next_song()
+        else:
+            # End of playlist
+            self.engine.is_playing = False
+            self.play_btn.icon = "▶️"
+            self.play_btn._draw()
+    
+    def _update_status(self, message: str):
+        """Cập nhật status bar"""
+        self.status_label.config(text=message)
+    
+    def _update_ll_info(self):
+        """Cập nhật thông tin Linked List - THỂ HIỆN RÕ RÀNG CẤU TRÚC DỮ LIỆU"""
+        size = len(self.playlist)
+        if size == 0:
+            self.ll_info.config(text="🔗 Linked List: Empty | Press Ctrl+L to visualize")
+            return
+        
+        current = self.playlist.current_index + 1 if size > 0 else 0
+        mode = "Circular" if self.playlist.circular else "Linear"
+        has_next = "✓" if self.playlist.has_next() else "✗"
+        has_prev = "✓" if self.playlist.has_previous() else "✗"
+        
+        # Hiển thị thông tin chi tiết hơn
+        info = f"🔗 LL: {size} nodes | Head→Tail | Current: {current} | Next:{has_next} Prev:{has_prev} | {mode}"
+        self.ll_info.config(text=info)
+    
+    def _format_time(self, seconds: float) -> str:
+        """Format thời gian mm:ss"""
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}:{secs:02d}"
+    
+    # ==================== NEW FEATURES ====================
+    
+    def save_playlist(self):
+        """Lưu playlist hiện tại"""
+        self._save_all_data()
+        self._update_status("💾 Playlist saved!")
+    
+    def load_playlist(self):
+        """Load playlist đã lưu"""
+        if messagebox.askyesno("Load Playlist", "Load saved playlist? Current playlist will be replaced."):
+            self._load_saved_data()
+            self._refresh_playlist_view()
+            self._update_status("📂 Playlist loaded!")
+    
+    def export_playlist(self):
+        """Export playlist ra file"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Export Playlist"
+        )
+        if filename:
+            if self.playlist.save_to_file(filename):
+                self._update_status(f"✅ Exported to {os.path.basename(filename)}")
+            else:
+                self._update_status("❌ Export failed!")
+    
+    def import_playlist(self):
+        """Import playlist từ file"""
+        filename = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Import Playlist"
+        )
+        if filename:
+            imported = PlaylistLinkedList.load_from_file(filename)
+            if imported:
+                if messagebox.askyesno("Import", "Replace current playlist or append?"):
+                    self.playlist = imported
+                else:
+                    for song in imported:
+                        self.playlist.append(song)
+                self._refresh_playlist_view()
+                self._update_status("✅ Imported successfully!")
+            else:
+                self._update_status("❌ Import failed!")
+    
+    def search_song(self):
+        """Tìm kiếm bài hát trong playlist"""
+        query = simpledialog.askstring("Search", "Enter song name or artist:")
+        if query:
+            query_lower = query.lower()
+            found = False
+            for i, song in enumerate(self.playlist):
+                if query_lower in song.title.lower() or query_lower in song.artist.lower():
+                    self.playlist.go_to(i)
+                    self._refresh_playlist_view()
+                    # Highlight found song
+                    items = self.playlist_tree.get_children()
+                    if i < len(items):
+                        self.playlist_tree.selection_set(items[i])
+                        self.playlist_tree.see(items[i])
+                    found = True
+                    break
+            if found:
+                self._update_status(f"🔍 Found: {query}")
+            else:
+                messagebox.showinfo("Search", f"No song found matching '{query}'")
+    
+    def _on_right_click(self, event):
+        """Menu khi right-click vào bài hát"""
+        item = self.playlist_tree.identify_row(event.y)
+        if item:
+            index = self.playlist_tree.index(item)
+            self.playlist.go_to(index)
+            song = self.playlist.current_song
+            
+            menu = tk.Menu(self.root, tearoff=0)
+            menu.add_command(label=f"▶️ Play: {song.title}", command=self.play_current_song)
+            menu.add_separator()
+            
+            # Thêm option mở YouTube nếu có YouTube URL
+            if song and hasattr(song, 'youtube_url') and song.youtube_url:
+                menu.add_command(label="📺 Open in YouTube", 
+                               command=lambda: self._open_youtube_in_browser(song.youtube_url))
+                menu.add_separator()
+            
+            menu.add_command(label="❤️ Add to Favorites", command=self.add_to_favorites)
+            menu.add_command(label="➡️ Remove from Favorites", command=self.remove_from_favorites)
+            menu.add_separator()
+            menu.add_command(label="🗑️ Delete from Playlist", command=lambda: self._delete_at_index(index))
+            
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+    
+    def _open_youtube_in_browser(self, url: str):
+        """Mở YouTube video trong browser (như Notion embed)"""
+        webbrowser.open(url)
+    
+    def add_to_favorites(self):
+        """Thêm bài hát hiện tại vào favorites"""
+        song = self.playlist.current_song
+        if not song:
+            return
+        
+        # Kiểm tra đã có chưa
+        if song not in self.favorites:
+            self.favorites.append(song)
+            self._update_status(f"❤️ Added to favorites: {song.title}")
+        else:
+            self._update_status(f"💚 Already in favorites: {song.title}")
+    
+    def remove_from_favorites(self):
+        """Xóa bài hát khỏi favorites"""
+        song = self.playlist.current_song
+        if not song:
+            return
+        
+        # Tìm và xóa trong favorites
+        for i, fav_song in enumerate(self.favorites):
+            if fav_song.path == song.path:
+                self.favorites.remove_at(i)
+                self._update_status(f"💔 Removed from favorites: {song.title}")
+                return
+        
+        self._update_status("❌ Not in favorites")
+    
+    def show_favorites(self):
+        """Hiển thị cửa sổ favorites"""
+        fav_window = tk.Toplevel(self.root)
+        fav_window.title("❤️ Favorites")
+        fav_window.geometry("500x400")
+        fav_window.configure(bg=Theme.BG_DARK)
+        
+        header = tk.Frame(fav_window, bg=Theme.BG_CARD, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(header, text=f"❤️ Favorites ({len(self.favorites)} songs)",
+                font=("Segoe UI", 14, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_SECONDARY).pack()
+        
+        # Listbox
+        listbox_frame = tk.Frame(fav_window, bg=Theme.BG_DARK)
+        listbox_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        scrollbar = tk.Scrollbar(listbox_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        fav_listbox = tk.Listbox(listbox_frame,
+                                bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                                font=("Segoe UI", 11),
+                                selectbackground=Theme.ACCENT_PRIMARY,
+                                yscrollcommand=scrollbar.set)
+        scrollbar.config(command=fav_listbox.yview)
+        
+        for song in self.favorites:
+            fav_listbox.insert(tk.END, str(song))
+        
+        fav_listbox.pack(fill=tk.BOTH, expand=True)
+        
+        def play_selected():
+            selection = fav_listbox.curselection()
+            if selection:
+                idx = selection[0]
+                fav_song = list(self.favorites)[idx]
+                # Tìm trong playlist chính
+                for i, song in enumerate(self.playlist):
+                    if song.path == fav_song.path:
+                        self.playlist.go_to(i)
+                        self.play_current_song()
+                        fav_window.destroy()
+                        return
+        
+        fav_listbox.bind("<Double-1>", lambda e: play_selected())
+        
+        # Buttons
+        btn_frame = tk.Frame(fav_window, bg=Theme.BG_DARK)
+        btn_frame.pack(pady=10)
+        
+        tk.Button(btn_frame, text="▶️ Play", command=play_selected,
+                 bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
+                 font=("Segoe UI", 10, "bold"),
+                 padx=20, pady=5, border=0).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_frame, text="🗑️ Clear All", 
+                 command=lambda: self._clear_favorites(fav_window, fav_listbox),
+                 bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10),
+                 padx=20, pady=5, border=0).pack(side=tk.LEFT, padx=5)
+    
+    def _clear_favorites(self, window, listbox):
+        """Xóa tất cả favorites"""
+        if messagebox.askyesno("Clear Favorites", "Remove all favorites?"):
+            self.favorites.clear()
+            listbox.delete(0, tk.END)
+            self._update_status("💔 Cleared all favorites")
+    
+    def _delete_at_index(self, index):
+        """Xóa bài hát tại index"""
+        song = self.playlist.remove_at(index)
+        if song:
+            self._refresh_playlist_view()
+            self._update_status(f"🗑️ Removed: {song.title}")
+    
+    def show_stats(self):
+        """Hiển thị thống kê"""
+        stats_window = tk.Toplevel(self.root)
+        stats_window.title("📊 Statistics")
+        stats_window.geometry("400x300")
+        stats_window.configure(bg=Theme.BG_DARK)
+        
+        content = tk.Frame(stats_window, bg=Theme.BG_CARD, padx=20, pady=20)
+        content.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        tk.Label(content, text="📊 PLAYER STATISTICS",
+                font=("Segoe UI", 16, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack(pady=10)
+        
+        stats_text = f"""
+🎵 Total Songs: {len(self.playlist)}
+❤️ Favorites: {len(self.favorites)}
+▶️ Total Played: {self.stats.get('total_played', 0)}
+⏱️ Total Time: {self._format_time(self.stats.get('total_time', 0))}
+📅 Last Played: {self.stats.get('last_played', 'Never')}
+        """
+        
+        tk.Label(content, text=stats_text.strip(),
+                font=("Segoe UI", 11),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                justify=tk.LEFT).pack(anchor=tk.W, pady=10)
+        
+        tk.Button(content, text="Reset Stats",
+                 command=lambda: self._reset_stats(stats_window),
+                 bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10),
+                 padx=20, pady=5, border=0).pack(pady=10)
+    
+    def _reset_stats(self, window):
+        """Reset statistics"""
+        if messagebox.askyesno("Reset", "Reset all statistics?"):
+            self.stats = {
+                "total_played": 0,
+                "total_time": 0.0,
+                "last_played": None
+            }
+            window.destroy()
+            self.show_stats()
+            self._update_status("📊 Statistics reset")
+    
+    def play_current_song(self):
+        """Phát bài hát hiện tại"""
+        song = self.playlist.current_song
+        if not song:
+            return
+        
+        # Kiểm tra định dạng cần convert
+        ext = os.path.splitext(song.path)[1].lower()
+        needs_convert = ext in MusicEngine.CONVERT_FORMATS
+        
+        if self.engine.load(song.path):
+            self.engine.play()
+            
+            # Mở video player nếu có video
+            if self.engine._has_video and self.video_player and self.engine._video_path:
+                self.video_player.open(self.engine._video_path)
+            else:
+                # Không có video, vẽ vinyl
+                self._draw_vinyl()
+            
+            # Update stats
+            self.stats["total_played"] = self.stats.get("total_played", 0) + 1
+            self.stats["last_played"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            
+            # Update UI
+            self.song_title.config(text=song.title)
+            self.song_artist.config(text=song.artist)
+            self.play_btn.icon = "⏸️"
+            self.play_btn._draw()
+            
+            # Update progress
+            self.progress_slider.max_val = self.engine.duration if self.engine.duration > 0 else 100
+            self.progress_slider.value = 0  # Reset về đầu
+            self.time_total.config(text=self._format_time(self.engine.duration))
+            self.time_current.config(text="0:00")  # Reset thời gian hiện tại
+            
+            self._refresh_playlist_view()
+            
+            # Status với thông tin convert
+            convert_info = f" (converted from {ext})" if needs_convert and self.engine._temp_file else ""
+            video_info = " 🎬 [Video]" if self.engine._has_video else ""
+            self._update_status(f"▶️ Now playing: {song}{convert_info}{video_info}")
+        else:
+            if needs_convert:
+                if not PYDUB_AVAILABLE:
+                    self._update_status(f"❌ Cannot play {ext}: Install pydub (pip install pydub)")
+                elif not FFMPEG_AVAILABLE:
+                    self._update_status(f"❌ Cannot play {ext}: Restart terminal for FFmpeg")
+                else:
+                    self._update_status(f"❌ Error converting: {song.title}")
+            else:
+                self._update_status(f"❌ Error loading: {song.title}")
+    
+    def _on_close(self):
+        """Xử lý đóng app"""
+        self.running = False
+        self.engine.stop()
+        
+        # Dừng video player
+        if self.video_player:
+            self.video_player.stop()
+        
+        # Lưu dữ liệu trước khi đóng
+        self._save_all_data()
+        
+        # Dọn dẹp thư mục temp
+        temp_dir = self.engine._temp_dir
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+        
+        self.root.destroy()
+    
+    # ==================== LINKED LIST VISUALIZATION & OPERATIONS ====================
+    # CÁC TÍNH NĂNG NÀY THỂ HIỆN RÕ RÀNG KHẢ NĂNG CỦA LINKED LIST
+    
+    def show_linked_list_visualization(self):
+        """Hiển thị cửa sổ visualization Linked List - THỂ HIỆN CẤU TRÚC DỮ LIỆU"""
+        vis_window = tk.Toplevel(self.root)
+        vis_window.title("🔗 Linked List Visualization")
+        vis_window.geometry("900x600")
+        vis_window.configure(bg=Theme.BG_DARK)
+        
+        # Header
+        header = tk.Frame(vis_window, bg=Theme.BG_CARD, pady=15)
+        header.pack(fill=tk.X, padx=10, pady=10)
+        tk.Label(header, text="🔗 DOUBLY LINKED LIST VISUALIZATION",
+                font=("Segoe UI", 16, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack()
+        tk.Label(header, text="Hiển thị cấu trúc Linked List với Head, Tail, Current Node và các pointers",
+                font=("Segoe UI", 10),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY).pack(pady=5)
+        
+        # Canvas để vẽ Linked List
+        canvas_frame = tk.Frame(vis_window, bg=Theme.BG_DARK)
+        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        canvas = tk.Canvas(canvas_frame, bg=Theme.BG_CARD, highlightthickness=0)
+        scrollbar = tk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Vẽ Linked List
+        self._draw_linked_list(canvas)
+        
+        # Info panel
+        info_frame = tk.Frame(vis_window, bg=Theme.BG_CARD, padx=15, pady=10)
+        info_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        info_text = f"""
+📊 Linked List Info:
+   • Size: {len(self.playlist)} nodes
+   • Head: {self.playlist._head.data.title if self.playlist._head else "None"}
+   • Tail: {self.playlist._tail.data.title if self.playlist._tail else "None"}
+   • Current: {self.playlist.current_song.title if self.playlist.current_song else "None"} (Index: {self.playlist.current_index})
+   • Circular Mode: {'ON' if self.playlist.circular else 'OFF'}
+   • Empty: {self.playlist.is_empty}
+        """
+        
+        tk.Label(info_frame, text=info_text.strip(),
+                font=("Segoe UI", 10),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                justify=tk.LEFT).pack(anchor=tk.W)
+        
+        # Refresh button
+        def refresh():
+            canvas.delete("all")
+            self._draw_linked_list(canvas)
+            # Update info
+            info_text = f"""
+📊 Linked List Info:
+   • Size: {len(self.playlist)} nodes
+   • Head: {self.playlist._head.data.title if self.playlist._head else "None"}
+   • Tail: {self.playlist._tail.data.title if self.playlist._tail else "None"}
+   • Current: {self.playlist.current_song.title if self.playlist.current_song else "None"} (Index: {self.playlist.current_index})
+   • Circular Mode: {'ON' if self.playlist.circular else 'OFF'}
+   • Empty: {self.playlist.is_empty}
+            """
+            for widget in info_frame.winfo_children():
+                widget.destroy()
+            tk.Label(info_frame, text=info_text.strip(),
+                    font=("Segoe UI", 10),
+                    bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                    justify=tk.LEFT).pack(anchor=tk.W)
+        
+        btn_frame = tk.Frame(vis_window, bg=Theme.BG_DARK)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="🔄 Refresh", command=refresh,
+                 bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
+                 font=("Segoe UI", 10, "bold"),
+                 padx=20, pady=5, border=0, cursor="hand2").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Close", command=vis_window.destroy,
+                 bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10),
+                 padx=20, pady=5, border=0, cursor="hand2").pack(side=tk.LEFT, padx=5)
+    
+    def _draw_linked_list(self, canvas):
+        """Vẽ Linked List trên Canvas"""
+        if self.playlist.is_empty:
+            canvas.create_text(450, 200, text="Linked List is Empty",
+                             font=("Segoe UI", 16),
+                             fill=Theme.TEXT_MUTED)
+            return
+        
+        # Kích thước node
+        node_width = 200
+        node_height = 80
+        node_spacing = 250
+        start_x = 50
+        start_y = 50
+        
+        # Vẽ từng node
+        node = self.playlist._head
+        x = start_x
+        y = start_y
+        nodes = []
+        
+        while node:
+            # Xác định màu node
+            is_current = (node == self.playlist._current)
+            is_head = (node == self.playlist._head)
+            is_tail = (node == self.playlist._tail)
+            
+            if is_current:
+                node_color = Theme.ACCENT_PRIMARY
+                border_color = Theme.ACCENT_SECONDARY
+                border_width = 3
+            elif is_head or is_tail:
+                node_color = Theme.ACCENT_TERTIARY
+                border_color = Theme.ACCENT_PRIMARY
+                border_width = 2
+            else:
+                node_color = Theme.BG_HOVER
+                border_color = Theme.TEXT_MUTED
+                border_width = 1
+            
+            # Vẽ node (rounded rectangle)
+            x1, y1 = x, y
+            x2, y2 = x + node_width, y + node_height
+            
+            # Background
+            canvas.create_rectangle(x1, y1, x2, y2,
+                                  fill=node_color, outline=border_color,
+                                  width=border_width)
+            
+            # Labels
+            labels = []
+            if is_head:
+                labels.append("HEAD")
+            if is_tail:
+                labels.append("TAIL")
+            if is_current:
+                labels.append("CURRENT")
+            
+            if labels:
+                canvas.create_text(x + node_width // 2, y + 15,
+                                 text=" | ".join(labels),
+                                 font=("Segoe UI", 8, "bold"),
+                                 fill=Theme.BG_DARK)
+            
+            # Song info
+            song_text = node.data.title[:25] + "..." if len(node.data.title) > 25 else node.data.title
+            canvas.create_text(x + node_width // 2, y + node_height // 2,
+                             text=song_text,
+                             font=("Segoe UI", 10, "bold"),
+                             fill=Theme.TEXT_PRIMARY if is_current else Theme.TEXT_SECONDARY)
+            
+            canvas.create_text(x + node_width // 2, y + node_height - 20,
+                             text=node.data.artist[:20] + "..." if len(node.data.artist) > 20 else node.data.artist,
+                             font=("Segoe UI", 9),
+                             fill=Theme.TEXT_MUTED)
+            
+            # Lưu vị trí node
+            nodes.append({
+                'node': node,
+                'x': x + node_width // 2,
+                'y': y + node_height // 2,
+                'x1': x1, 'y1': y1,
+                'x2': x2, 'y2': y2
+            })
+            
+            # Vẽ pointer next (mũi tên sang phải)
+            if node.next:
+                arrow_x = x2
+                arrow_y = y + node_height // 2
+                arrow_end_x = x + node_spacing
+                arrow_end_y = arrow_y
+                
+                # Đường thẳng
+                canvas.create_line(arrow_x, arrow_y, arrow_end_x - 20, arrow_end_y,
+                                 fill=Theme.ACCENT_PRIMARY, width=2, arrow=tk.LAST)
+                
+                # Label "next"
+                canvas.create_text((arrow_x + arrow_end_x) // 2, arrow_y - 15,
+                                 text="next",
+                                 font=("Segoe UI", 8),
+                                 fill=Theme.ACCENT_PRIMARY)
+            
+            # Vẽ pointer prev (mũi tên từ phải sang trái, ở phía trên)
+            if node.prev:
+                arrow_x = x
+                arrow_y = y - 20
+                arrow_end_x = x - node_spacing + node_width
+                arrow_end_y = arrow_y
+                
+                # Đường thẳng
+                canvas.create_line(arrow_x, arrow_y, arrow_end_x + 20, arrow_end_y,
+                                 fill=Theme.ACCENT_SECONDARY, width=2, arrow=tk.LAST)
+                
+                # Label "prev"
+                canvas.create_text((arrow_x + arrow_end_x) // 2, arrow_y - 10,
+                                 text="prev",
+                                 font=("Segoe UI", 8),
+                                 fill=Theme.ACCENT_SECONDARY)
+            
+            x += node_spacing
+            node = node.next
+            
+            # Xuống dòng nếu quá rộng
+            if x + node_width > 850:
+                x = start_x
+                y += node_height + 50
+        
+        # Update scroll region
+        canvas.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+    
+    def show_linked_list_operations(self):
+        """Panel thao tác Linked List - THỂ HIỆN CÁC OPERATIONS"""
+        ops_window = tk.Toplevel(self.root)
+        ops_window.title("⚙️ Linked List Operations")
+        ops_window.geometry("500x400")
+        ops_window.configure(bg=Theme.BG_DARK)
+        
+        header = tk.Frame(ops_window, bg=Theme.BG_CARD, pady=15)
+        header.pack(fill=tk.X, padx=10, pady=10)
+        tk.Label(header, text="⚙️ LINKED LIST OPERATIONS",
+                font=("Segoe UI", 16, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack()
+        tk.Label(header, text="Các thao tác cơ bản của Doubly Linked List",
+                font=("Segoe UI", 10),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY).pack(pady=5)
+        
+        content = tk.Frame(ops_window, bg=Theme.BG_DARK)
+        content.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # Operations list
+        ops_text = """
+📋 Các Operations đã implement:
+
+✅ O(1) Operations:
+   • append(song) - Thêm vào cuối
+   • prepend(song) - Thêm vào đầu
+   • next() - Chuyển đến node tiếp theo
+   • previous() - Chuyển đến node trước
+   • remove_current() - Xóa node hiện tại
+
+✅ O(n) Operations:
+   • insert_at(index, song) - Chèn tại vị trí
+   • remove_at(index) - Xóa tại vị trí
+   • go_to(index) - Nhảy đến index
+   • find_by_title(title) - Tìm kiếm
+
+✅ Special Features:
+   • Circular mode - Lặp playlist
+   • Shuffle - Xáo trộn
+   • Save/Load - Lưu trữ
+        """
+        
+        tk.Label(content, text=ops_text.strip(),
+                font=("Segoe UI", 10),
+                bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY,
+                justify=tk.LEFT).pack(anchor=tk.W, pady=10)
+        
+        # Buttons
+        btn_frame = tk.Frame(content, bg=Theme.BG_DARK)
+        btn_frame.pack(pady=20)
+        
+        tk.Button(btn_frame, text="➕ Insert at Position",
+                 command=self.insert_song_at_position,
+                 bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
+                 font=("Segoe UI", 10, "bold"),
+                 padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
+        
+        tk.Button(btn_frame, text="➖ Delete at Position",
+                 command=self.delete_song_at_position,
+                 bg=Theme.ACCENT_SECONDARY, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10, "bold"),
+                 padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
+        
+        tk.Button(btn_frame, text="📊 View Visualization",
+                 command=self.show_linked_list_visualization,
+                 bg=Theme.ACCENT_TERTIARY, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10, "bold"),
+                 padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
+        
+        tk.Button(btn_frame, text="Close", command=ops_window.destroy,
+                 bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10),
+                 padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
+    
+    def show_linked_list_info(self):
+        """Hiển thị thông tin chi tiết về Linked List"""
+        info_window = tk.Toplevel(self.root)
+        info_window.title("ℹ️ Linked List Information")
+        info_window.geometry("600x500")
+        info_window.configure(bg=Theme.BG_DARK)
+        
+        header = tk.Frame(info_window, bg=Theme.BG_CARD, pady=15)
+        header.pack(fill=tk.X, padx=10, pady=10)
+        tk.Label(header, text="ℹ️ LINKED LIST INFORMATION",
+                font=("Segoe UI", 16, "bold"),
+                bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack()
+        
+        content = tk.Frame(info_window, bg=Theme.BG_CARD, padx=20, pady=20)
+        content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Thông tin chi tiết
+        current_idx = self.playlist.current_index
+        head_song = self.playlist._head.data if self.playlist._head else None
+        tail_song = self.playlist._tail.data if self.playlist._tail else None
+        current_song = self.playlist.current_song
+        
+        info_text = f"""
+📊 CẤU TRÚC LINKED LIST:
+
+🔹 Size: {len(self.playlist)} nodes
+🔹 Empty: {self.playlist.is_empty}
+🔹 Circular Mode: {'ON' if self.playlist.circular else 'OFF'}
+
+📍 POINTERS:
+   • Head: {head_song.title if head_song else "None"} ({head_song.artist if head_song else ""})
+   • Tail: {tail_song.title if tail_song else "None"} ({tail_song.artist if tail_song else ""})
+   • Current: {current_song.title if current_song else "None"} (Index: {current_idx})
+   • Current has next: {self.playlist.has_next()}
+   • Current has prev: {self.playlist.has_previous()}
+
+⚡ TIME COMPLEXITY:
+   • next() / previous(): O(1) ✅
+   • append() / prepend(): O(1) ✅
+   • remove_current(): O(1) ✅
+   • insert_at() / remove_at(): O(n) ⚠️
+   • go_to(index): O(n) ⚠️ (tối ưu từ 2 phía)
+
+🔗 LINKED LIST STRUCTURE:
+   Node:
+   ┌─────────────┐
+   │   prev      │ ←─ Doubly Linked
+   │   data      │
+   │   next      │ →─ Doubly Linked
+   └─────────────┘
+        """
+        
+        tk.Label(content, text=info_text.strip(),
+                font=("Segoe UI", 10),
+                bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
+                justify=tk.LEFT).pack(anchor=tk.W)
+        
+        # List all nodes
+        if not self.playlist.is_empty:
+            tk.Label(content, text="\n📋 ALL NODES (in order):",
+                    font=("Segoe UI", 11, "bold"),
+                    bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack(anchor=tk.W, pady=(20, 10))
+            
+            listbox_frame = tk.Frame(content, bg=Theme.BG_CARD)
+            listbox_frame.pack(fill=tk.BOTH, expand=True)
+            
+            scrollbar = tk.Scrollbar(listbox_frame)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            listbox = tk.Listbox(listbox_frame,
+                               bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY,
+                               font=("Segoe UI", 9),
+                               yscrollcommand=scrollbar.set,
+                               selectbackground=Theme.ACCENT_PRIMARY)
+            scrollbar.config(command=listbox.yview)
+            
+            for i, song in enumerate(self.playlist):
+                marker = "👉 " if i == current_idx else "   "
+                listbox.insert(tk.END, f"{marker}[{i}] {song.title} - {song.artist}")
+            
+            listbox.pack(fill=tk.BOTH, expand=True)
+        
+        tk.Button(content, text="Close", command=info_window.destroy,
+                 bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
+                 font=("Segoe UI", 10),
+                 padx=20, pady=5, border=0, cursor="hand2").pack(pady=10)
+    
+    def insert_song_at_position(self):
+        """Insert bài hát tại vị trí cụ thể - THỂ HIỆN INSERT OPERATION"""
+        if self.playlist.is_empty:
+            messagebox.showinfo("Insert", "Playlist is empty. Please add songs first.")
+            return
+        
+        # Chọn file
+        files = filedialog.askopenfilenames(
+            title="Select Music File to Insert",
+            filetypes=[
+                ("Audio/Video Files", "*.mp3 *.wav *.ogg *.flac *.mp4 *.m4a *.aac *.wma"),
+                ("All Files", "*.*")
+            ]
+        )
+        
+        if not files:
+            return
+        
+        # Nhập vị trí
+        position = simpledialog.askinteger(
+            "Insert at Position",
+            f"Enter position (0 to {len(self.playlist)}):\n0 = đầu, {len(self.playlist)} = cuối",
+            minvalue=0,
+            maxvalue=len(self.playlist)
+        )
+        
+        if position is None:
+            return
+        
+        # Insert
+        for file_path in files:
+            song = Song.from_path(file_path)
+            if self.playlist.insert_at(position, song):
+                self._update_status(f"✅ Inserted '{song.title}' at position {position}")
+                position += 1  # Tăng position cho các file tiếp theo
+            else:
+                self._update_status(f"❌ Failed to insert '{song.title}'")
+        
+        self._refresh_playlist_view()
+        self._update_ll_info()
+    
+    def delete_song_at_position(self):
+        """Delete bài hát tại vị trí cụ thể - THỂ HIỆN DELETE OPERATION"""
+        if self.playlist.is_empty:
+            messagebox.showinfo("Delete", "Playlist is empty.")
+            return
+        
+        position = simpledialog.askinteger(
+            "Delete at Position",
+            f"Enter position to delete (0 to {len(self.playlist) - 1}):",
+            minvalue=0,
+            maxvalue=len(self.playlist) - 1
+        )
+        
+        if position is None:
+            return
+        
+        song = self.playlist.remove_at(position)
+        if song:
+            self._refresh_playlist_view()
+            self._update_status(f"🗑️ Deleted '{song.title}' at position {position}")
+            self._update_ll_info()
+        else:
+            self._update_status(f"❌ Failed to delete at position {position}")
+    
+    def run(self):
+        """Chạy ứng dụng"""
+        self.root.mainloop()
+
+
+# ==================== MAIN ====================
+if __name__ == "__main__":
+    app = MelodifyApp()
+    app.run()
+
