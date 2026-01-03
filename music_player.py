@@ -16,640 +16,17 @@ from pathlib import Path
 from typing import Optional
 import random
 from datetime import datetime
-
-try:
-    import pygame
-    # Khởi tạo pygame mixer với settings tối ưu cho nhiều định dạng
-    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("⚠️ pygame not installed. Run: pip install pygame")
-
-# Video support
-try:
-    import cv2
-    import numpy as np
-    from PIL import Image, ImageTk
-    VIDEO_AVAILABLE = True
-except ImportError:
-    VIDEO_AVAILABLE = False
-    print("⚠️ Video support not available. Install: pip install opencv-python Pillow")
-
-# Kiểm tra pydub + ffmpeg cho MP4 support
-FFMPEG_AVAILABLE = False
-PYDUB_AVAILABLE = False
-
-def find_ffmpeg():
-    """Tìm và thêm FFmpeg vào PATH nếu cài qua winget"""
-    import subprocess
-    import glob
-    
-    # Kiểm tra FFmpeg đã có trong PATH chưa
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True,
-                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        if result.returncode == 0:
-            return True
-    except FileNotFoundError:
-        pass
-    
-    # Tìm FFmpeg trong các đường dẫn phổ biến (Windows)
-    if os.name == 'nt':
-        search_paths = [
-            os.path.expanduser(r"~\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg*\ffmpeg-*\bin"),
-            os.path.expanduser(r"~\AppData\Local\Microsoft\WinGet\Links"),
-            r"C:\ffmpeg\bin",
-            r"C:\Program Files\ffmpeg\bin",
-            r"C:\tools\ffmpeg\bin",
-        ]
-        
-        for pattern in search_paths:
-            matches = glob.glob(pattern)
-            for path in matches:
-                ffmpeg_exe = os.path.join(path, "ffmpeg.exe")
-                if os.path.exists(ffmpeg_exe):
-                    # Thêm vào PATH
-                    os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
-                    print(f"📍 Found FFmpeg at: {path}")
-                    return True
-    
-    return False
-
-# Tìm FFmpeg trước
-if find_ffmpeg():
-    FFMPEG_AVAILABLE = True
-    print("✅ FFmpeg detected - MP4 support enabled")
-else:
-    print("⚠️ FFmpeg not found. Install: winget install ffmpeg")
-
-# Kiểm tra pydub
-try:
-    from pydub import AudioSegment
-    PYDUB_AVAILABLE = True
-    print("✅ pydub loaded successfully")
-except ImportError as e:
-    print(f"⚠️ pydub import error: {e}")
-except Exception as e:
-    print(f"⚠️ pydub error: {e}")
-
-# YouTube support
-try:
-    import yt_dlp
-    YT_DLP_AVAILABLE = True
-    print("✅ yt-dlp loaded successfully - YouTube support enabled")
-except ImportError:
-    YT_DLP_AVAILABLE = False
-    print("⚠️ yt-dlp not installed. Run: pip install yt-dlp")
-
-import re
 import webbrowser
-import urllib.parse
 
+# Import từ các module đã tách
+from theme import Theme
+from ui_components import GlowButton, ModernSlider
+from music_engine import MusicEngine, VideoPlayer, VIDEO_AVAILABLE, PYDUB_AVAILABLE, FFMPEG_AVAILABLE
+from youtube_handler import (
+    YT_DLP_AVAILABLE, parse_youtube_url, is_youtube_url,
+    download_youtube, get_youtube_info, get_playlist_entries
+)
 from linked_list import PlaylistLinkedList, Song
-
-
-# ==================== COLOR SCHEME ====================
-class Theme:
-    """Cyberpunk/Neon Theme"""
-    BG_DARK = "#0a0a0f"
-    BG_CARD = "#12121a"
-    BG_HOVER = "#1a1a2e"
-    
-    ACCENT_PRIMARY = "#00d4ff"      # Cyan
-    ACCENT_SECONDARY = "#ff006e"    # Pink/Magenta
-    ACCENT_TERTIARY = "#8338ec"     # Purple
-    
-    TEXT_PRIMARY = "#ffffff"
-    TEXT_SECONDARY = "#a0a0b0"
-    TEXT_MUTED = "#505060"
-    
-    SUCCESS = "#00ff88"
-    WARNING = "#ffaa00"
-    
-    GRADIENT_START = "#00d4ff"
-    GRADIENT_END = "#ff006e"
-
-
-# ==================== MUSIC PLAYER ENGINE ====================
-class MusicEngine:
-    """Engine phát nhạc sử dụng pygame với hỗ trợ MP4"""
-    
-    # Định dạng cần convert (video formats)
-    VIDEO_FORMATS = {'.mp4', '.webm', '.avi', '.mkv', '.mov'}
-    AUDIO_ONLY_FORMATS = {'.m4a', '.aac', '.wma'}
-    CONVERT_FORMATS = VIDEO_FORMATS | AUDIO_ONLY_FORMATS
-    
-    def __init__(self):
-        self.is_playing = False
-        self.is_paused = False
-        self.current_pos = 0.0
-        self.duration = 0.0
-        self._volume = 0.7
-        self._temp_file = None  # File tạm cho convert
-        self._temp_dir = os.path.join(os.path.dirname(__file__), '.temp_audio')
-        self._youtube_dir = os.path.join(os.path.dirname(__file__), '.youtube_downloads')
-        self._video_path = None  # Path to video file
-        self._has_video = False  # Whether current file has video
-        self._is_youtube = False  # Whether current file is from YouTube
-        
-        # Tạo thư mục temp
-        if not os.path.exists(self._temp_dir):
-            os.makedirs(self._temp_dir)
-        if not os.path.exists(self._youtube_dir):
-            os.makedirs(self._youtube_dir)
-        
-        if PYGAME_AVAILABLE:
-            pygame.mixer.music.set_volume(self._volume)
-    
-    def has_video_stream(self, path: str) -> bool:
-        """Kiểm tra file có video stream không"""
-        if not VIDEO_AVAILABLE:
-            return False
-        
-        try:
-            cap = cv2.VideoCapture(path)
-            has_video = cap.isOpened() and cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0
-            cap.release()
-            return has_video
-        except:
-            return False
-    
-    def load(self, path: str) -> bool:
-        """Load file nhạc - tự động convert MP4/M4A nếu cần"""
-        if not PYGAME_AVAILABLE:
-            return False
-        
-        try:
-            ext = os.path.splitext(path)[1].lower()
-            
-            # Kiểm tra có video không
-            self._has_video = ext in self.VIDEO_FORMATS and self.has_video_stream(path)
-            
-            if self._has_video:
-                # Giữ video path để phát video
-                self._video_path = path
-                # Extract audio để phát
-                converted_path = self._convert_to_wav(path)
-                if converted_path:
-                    path = converted_path
-                else:
-                    return False
-            elif ext in self.AUDIO_ONLY_FORMATS:
-                # Chỉ audio, convert như bình thường
-                converted_path = self._convert_to_wav(path)
-                if converted_path:
-                    path = converted_path
-            else:
-                # Không phải video format, dùng trực tiếp
-                self._video_path = None
-                self._has_video = False
-            
-            pygame.mixer.music.load(path)
-            self.duration = self._get_duration(path)
-            self.current_pos = 0
-            return True
-        except Exception as e:
-            print(f"Error loading: {e}")
-            return False
-    
-    def _convert_to_wav(self, path: str) -> Optional[str]:
-        """Convert MP4/M4A sang WAV để pygame phát được"""
-        if not PYDUB_AVAILABLE:
-            print("⚠️ pydub not installed. Run: pip install pydub")
-            return None
-        
-        if not FFMPEG_AVAILABLE:
-            print("⚠️ FFmpeg not found. Please restart terminal or add FFmpeg to PATH.")
-            return None
-        
-        try:
-            from pydub import AudioSegment
-            
-            # Tạo tên file temp
-            filename = os.path.basename(path)
-            temp_path = os.path.join(self._temp_dir, f"{os.path.splitext(filename)[0]}.wav")
-            
-            print(f"🔄 Converting {filename}...")
-            
-            # Convert
-            ext = os.path.splitext(path)[1].lower()
-            if ext == '.mp4' or ext == '.m4a':
-                audio = AudioSegment.from_file(path, format="mp4")
-            elif ext == '.webm':
-                audio = AudioSegment.from_file(path, format="webm")
-            else:
-                audio = AudioSegment.from_file(path)
-            
-            audio.export(temp_path, format="wav")
-            self._temp_file = temp_path
-            
-            print(f"✅ Converted successfully!")
-            return temp_path
-        except Exception as e:
-            print(f"❌ Convert error: {e}")
-            return None
-    
-    def cleanup_temp(self):
-        """Dọn dẹp file tạm"""
-        if self._temp_file and os.path.exists(self._temp_file):
-            try:
-                os.remove(self._temp_file)
-            except:
-                pass
-    
-    def play(self) -> None:
-        if not PYGAME_AVAILABLE:
-            return
-        if self.is_paused:
-            pygame.mixer.music.unpause()
-        else:
-            pygame.mixer.music.play()
-        self.is_playing = True
-        self.is_paused = False
-    
-    def pause(self) -> None:
-        if not PYGAME_AVAILABLE:
-            return
-        pygame.mixer.music.pause()
-        self.is_paused = True
-    
-    def stop(self) -> None:
-        if not PYGAME_AVAILABLE:
-            return
-        pygame.mixer.music.stop()
-        self.is_playing = False
-        self.is_paused = False
-        self.current_pos = 0
-        self._video_path = None
-        self._has_video = False
-        self.cleanup_temp()
-    
-    def seek(self, position: float) -> None:
-        """Seek đến vị trí (giây)"""
-        if not PYGAME_AVAILABLE:
-            return
-        
-        # Giới hạn position trong khoảng hợp lệ
-        position = max(0, min(position, self.duration))
-        self.current_pos = position
-        
-        # pygame.mixer.music.set_pos() không hoạt động tốt với mọi format
-        # Nên chỉ cập nhật current_pos, video player sẽ xử lý phần video
-        # Audio sẽ tự đồng bộ theo progress
-        try:
-            # Thử seek nếu có thể (có thể không hoạt động với một số format)
-            pygame.mixer.music.set_pos(position)
-        except:
-            # Nếu không được, chỉ cập nhật current_pos
-            pass
-    
-    @property
-    def volume(self) -> float:
-        return self._volume
-    
-    @volume.setter
-    def volume(self, value: float) -> None:
-        self._volume = max(0.0, min(1.0, value))
-        if PYGAME_AVAILABLE:
-            pygame.mixer.music.set_volume(self._volume)
-    
-    def get_pos(self) -> float:
-        """Lấy vị trí hiện tại (giây)"""
-        if not PYGAME_AVAILABLE:
-            return 0
-        return pygame.mixer.music.get_pos() / 1000.0
-    
-    def is_active(self) -> bool:
-        if not PYGAME_AVAILABLE:
-            return False
-        return pygame.mixer.music.get_busy()
-    
-    def _get_duration(self, path: str) -> float:
-        """Ước tính duration - để chính xác cần mutagen"""
-        try:
-            # Fallback: estimate from file size
-            size = os.path.getsize(path)
-            # Giả sử bitrate 192kbps
-            return size / (192 * 1000 / 8)
-        except:
-            return 180.0  # Default 3 phút
-
-
-# ==================== VIDEO PLAYER ====================
-class VideoPlayer:
-    """Video player hiển thị trong Canvas chính"""
-    
-    def __init__(self, canvas):
-        self.canvas = canvas  # Canvas để hiển thị video (vinyl)
-        self.video_cap = None
-        self.is_playing = False
-        self.is_paused = False
-        self.fps = 30
-        self.video_path = None
-        self.update_id = None
-        self.video_image_id = None
-    
-    def open(self, video_path: str):
-        """Mở video"""
-        if not VIDEO_AVAILABLE or not self.canvas:
-            return
-        
-        self.video_path = video_path
-        
-        # Load video
-        self.video_cap = cv2.VideoCapture(video_path)
-        if not self.video_cap.isOpened():
-            print("Error opening video")
-            return
-        
-        self.fps = self.video_cap.get(cv2.CAP_PROP_FPS) or 30
-        self.play()
-    
-    def play(self):
-        """Phát video"""
-        if self.video_cap is None:
-            return
-        
-        self.is_playing = True
-        self.is_paused = False
-        self._update_frame()
-    
-    def pause(self):
-        """Tạm dừng video"""
-        self.is_paused = True
-        if self.update_id:
-            self.canvas.after_cancel(self.update_id)
-            self.update_id = None
-    
-    def resume(self):
-        """Tiếp tục video"""
-        if self.is_paused:
-            self.is_paused = False
-            self._update_frame()
-    
-    def stop(self):
-        """Dừng video"""
-        self.is_playing = False
-        if self.update_id:
-            try:
-                self.canvas.after_cancel(self.update_id)
-            except:
-                pass
-            self.update_id = None
-        if self.video_cap:
-            self.video_cap.release()
-            self.video_cap = None
-        
-        # Xóa video image khỏi canvas
-        if self.video_image_id:
-            self.canvas.delete(self.video_image_id)
-            self.video_image_id = None
-    
-    def seek(self, position: float):
-        """Nhảy đến vị trí (giây)"""
-        if not self.video_cap or not self.video_cap.isOpened() or not self.canvas:
-            return
-        
-        try:
-            # Hủy scheduled update hiện tại
-            if self.update_id:
-                try:
-                    self.canvas.after_cancel(self.update_id)
-                except:
-                    pass
-                self.update_id = None
-            
-            # Seek đến frame mới
-            frame_number = int(position * self.fps)
-            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_number))
-            
-            # Đọc và hiển thị frame ngay lập tức
-            ret, frame = self.video_cap.read()
-            if ret:
-                # Convert BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = cv2.resize(frame, (280, 280))
-                
-                # Convert to PhotoImage
-                image = Image.fromarray(frame)
-                photo = ImageTk.PhotoImage(image=image)
-                
-                # Xóa image cũ nếu có
-                if self.video_image_id:
-                    self.canvas.delete(self.video_image_id)
-                
-                # Hiển thị image ở giữa canvas
-                self.video_image_id = self.canvas.create_image(
-                    140, 140,
-                    image=photo, anchor=tk.CENTER
-                )
-                self.canvas.photo = photo  # Keep a reference
-                
-                # Tiếp tục update nếu đang playing
-                if self.is_playing and not self.is_paused:
-                    delay = int(1000 / self.fps)
-                    self.update_id = self.canvas.after(delay, self._update_frame)
-        except Exception as e:
-            print(f"Video seek error: {e}")
-    
-    def _update_frame(self):
-        """Cập nhật frame video trên Canvas"""
-        if not self.is_playing or self.is_paused or self.video_cap is None or not self.canvas:
-            return
-        
-        ret, frame = self.video_cap.read()
-        if ret:
-            # Convert BGR to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Resize để fit canvas (280x280)
-            canvas_width = 280
-            canvas_height = 280
-            frame = cv2.resize(frame, (canvas_width, canvas_height))
-            
-            # Convert to PhotoImage
-            image = Image.fromarray(frame)
-            photo = ImageTk.PhotoImage(image=image)
-            
-            # Xóa image cũ nếu có
-            if self.video_image_id:
-                self.canvas.delete(self.video_image_id)
-            
-            # Hiển thị image ở giữa canvas
-            self.video_image_id = self.canvas.create_image(
-                canvas_width // 2, canvas_height // 2,
-                image=photo, anchor=tk.CENTER
-            )
-            self.canvas.photo = photo  # Keep a reference
-            
-            # Schedule next frame
-            delay = int(1000 / self.fps)
-            self.update_id = self.canvas.after(delay, self._update_frame)
-        else:
-            # Video ended
-            self.stop()
-    
-    def close(self):
-        """Đóng video"""
-        self.stop()
-
-
-# ==================== CUSTOM WIDGETS ====================
-class GlowButton(tk.Canvas):
-    """Button với hiệu ứng glow"""
-    
-    def __init__(self, parent, text="", icon="", command=None, 
-                 width=50, height=50, bg=Theme.BG_CARD, 
-                 fg=Theme.ACCENT_PRIMARY, **kwargs):
-        super().__init__(parent, width=width, height=height, 
-                        bg=Theme.BG_DARK, highlightthickness=0, **kwargs)
-        
-        self.command = command
-        self.fg_color = fg
-        self.bg_color = bg
-        self.text = text
-        self.icon = icon
-        self.width = width
-        self.height = height
-        self.is_hovered = False
-        
-        self._draw()
-        
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", self._on_click)
-    
-    def _draw(self):
-        self.delete("all")
-        
-        # Background circle/rounded rect
-        padding = 4
-        color = Theme.BG_HOVER if self.is_hovered else self.bg_color
-        
-        if self.width == self.height:
-            # Circle button
-            self.create_oval(padding, padding, 
-                           self.width - padding, self.height - padding,
-                           fill=color, outline=self.fg_color if self.is_hovered else "",
-                           width=2)
-        else:
-            # Rounded rectangle
-            self._create_rounded_rect(padding, padding, 
-                                     self.width - padding, self.height - padding,
-                                     radius=10, fill=color,
-                                     outline=self.fg_color if self.is_hovered else "")
-        
-        # Text/Icon
-        display = self.icon if self.icon else self.text
-        self.create_text(self.width // 2, self.height // 2,
-                        text=display, fill=self.fg_color,
-                        font=("Segoe UI Symbol", 14, "bold"))
-    
-    def _create_rounded_rect(self, x1, y1, x2, y2, radius=10, **kwargs):
-        points = [
-            x1 + radius, y1,
-            x2 - radius, y1,
-            x2, y1,
-            x2, y1 + radius,
-            x2, y2 - radius,
-            x2, y2,
-            x2 - radius, y2,
-            x1 + radius, y2,
-            x1, y2,
-            x1, y2 - radius,
-            x1, y1 + radius,
-            x1, y1,
-        ]
-        return self.create_polygon(points, smooth=True, **kwargs)
-    
-    def _on_enter(self, event):
-        self.is_hovered = True
-        self._draw()
-    
-    def _on_leave(self, event):
-        self.is_hovered = False
-        self._draw()
-    
-    def _on_click(self, event):
-        if self.command:
-            self.command()
-
-
-class ModernSlider(tk.Canvas):
-    """Slider với thiết kế hiện đại"""
-    
-    def __init__(self, parent, width=300, height=20, 
-                 min_val=0, max_val=100, value=0,
-                 command=None, **kwargs):
-        super().__init__(parent, width=width, height=height,
-                        bg=Theme.BG_DARK, highlightthickness=0, **kwargs)
-        
-        self.min_val = min_val
-        self.max_val = max_val
-        self._value = value
-        self.command = command
-        self.width = width
-        self.height = height
-        
-        self.bind("<Button-1>", self._on_click)
-        self.bind("<B1-Motion>", self._on_drag)
-        
-        self._draw()
-    
-    @property
-    def value(self) -> float:
-        return self._value
-    
-    @value.setter
-    def value(self, val: float):
-        self._value = max(self.min_val, min(self.max_val, val))
-        self._draw()
-    
-    def _draw(self):
-        self.delete("all")
-        
-        padding = 8
-        track_height = 6
-        track_y = self.height // 2 - track_height // 2
-        
-        # Track background
-        self.create_rectangle(padding, track_y, 
-                            self.width - padding, track_y + track_height,
-                            fill=Theme.BG_HOVER, outline="")
-        
-        # Progress
-        progress_ratio = (self._value - self.min_val) / (self.max_val - self.min_val) if self.max_val > self.min_val else 0
-        progress_width = (self.width - 2 * padding) * progress_ratio
-        
-        if progress_width > 0:
-            # Gradient effect với nhiều rectangles
-            self.create_rectangle(padding, track_y,
-                                padding + progress_width, track_y + track_height,
-                                fill=Theme.ACCENT_PRIMARY, outline="")
-        
-        # Knob
-        knob_x = padding + progress_width
-        knob_radius = 8
-        self.create_oval(knob_x - knob_radius, self.height // 2 - knob_radius,
-                        knob_x + knob_radius, self.height // 2 + knob_radius,
-                        fill=Theme.ACCENT_PRIMARY, outline=Theme.TEXT_PRIMARY, width=2)
-    
-    def _on_click(self, event):
-        self._update_value(event.x)
-    
-    def _on_drag(self, event):
-        self._update_value(event.x)
-    
-    def _update_value(self, x):
-        padding = 8
-        ratio = (x - padding) / (self.width - 2 * padding)
-        ratio = max(0, min(1, ratio))
-        self._value = self.min_val + ratio * (self.max_val - self.min_val)
-        self._draw()
-        
-        if self.command:
-            self.command(self._value)
 
 
 # ==================== MAIN APPLICATION ====================
@@ -703,6 +80,10 @@ class MelodifyApp:
         # Build UI
         self._create_styles()
         self._create_ui()
+        
+        # Refresh playlist view để hiển thị playlist đã load
+        self._refresh_playlist_view()
+        
         self._start_update_loop()
         
         # Keyboard bindings
@@ -1109,96 +490,6 @@ class MelodifyApp:
     
     # ==================== YOUTUBE SUPPORT ====================
     
-    def _parse_youtube_url(self, url: str) -> Optional[str]:
-        """Parse YouTube URL và trả về video ID"""
-        patterns = [
-            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
-            r'youtube\.com\/playlist\?list=([a-zA-Z0-9_-]+)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url)
-            if match:
-                return match.group(1)
-        return None
-    
-    def _is_youtube_url(self, url: str) -> bool:
-        """Kiểm tra xem URL có phải YouTube không"""
-        youtube_patterns = [
-            'youtube.com',
-            'youtu.be',
-            'youtube.com/embed',
-            'youtube.com/playlist'
-        ]
-        return any(pattern in url.lower() for pattern in youtube_patterns)
-    
-    def _download_youtube(self, url: str, progress_callback=None) -> Optional[str]:
-        """Download YouTube video/audio và trả về đường dẫn file"""
-        if not YT_DLP_AVAILABLE:
-            messagebox.showerror("Error", "yt-dlp not installed. Run: pip install yt-dlp")
-            return None
-        
-        try:
-            video_id = self._parse_youtube_url(url)
-            if not video_id:
-                messagebox.showerror("Error", "Invalid YouTube URL")
-                return None
-            
-            # Cấu hình yt-dlp - tối ưu để tránh SABR streaming warnings
-            ydl_opts = {
-                'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',  # Ưu tiên video+audio, giới hạn 1080p
-                'outtmpl': os.path.join(self.engine._youtube_dir, '%(title)s.%(ext)s'),
-                'quiet': True,  # Giảm output
-                'no_warnings': True,  # Bỏ qua warnings
-                'extract_flat': False,
-                'noplaylist': True,  # Chỉ download single video
-                'ignoreerrors': False,
-                # Tránh SABR streaming issues
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],  # Tránh web_safari client
-                    }
-                },
-            }
-            
-            if progress_callback:
-                ydl_opts['progress_hooks'] = [progress_callback]
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Lấy thông tin video
-                info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'Unknown')
-                duration = info.get('duration', 0)
-                
-                # Download
-                ydl.download([url])
-                
-                # Tìm file đã download
-                # yt-dlp có thể đổi tên file, nên tìm file mới nhất trong thư mục
-                files = os.listdir(self.engine._youtube_dir)
-                # Lọc file có extension video/audio
-                video_files = [f for f in files if os.path.splitext(f)[1].lower() in ['.mp4', '.webm', '.mkv', '.m4a']]
-                
-                if video_files:
-                    # Lấy file mới nhất
-                    video_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.engine._youtube_dir, x)), reverse=True)
-                    file_path = os.path.join(self.engine._youtube_dir, video_files[0])
-                    
-                    # Tạo Song object với thông tin YouTube
-                    song = Song(
-                        title=title,
-                        artist=info.get('uploader', 'YouTube'),
-                        path=file_path,
-                        duration=duration
-                    )
-                    return file_path
-            
-            return None
-        except Exception as e:
-            print(f"Error downloading YouTube: {e}")
-            messagebox.showerror("Error", f"Failed to download YouTube video: {str(e)}")
-            return None
-    
     def add_from_youtube(self):
         """Thêm bài hát từ YouTube URL"""
         if not YT_DLP_AVAILABLE:
@@ -1222,7 +513,7 @@ class MelodifyApp:
             return
         
         # Kiểm tra URL hợp lệ
-        if not self._is_youtube_url(url):
+        if not is_youtube_url(url):
             messagebox.showerror("Invalid URL", "Please enter a valid YouTube URL")
             return
         
@@ -1261,19 +552,38 @@ class MelodifyApp:
             if d['status'] == 'downloading':
                 if 'total_bytes' in d:
                     percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
-                    progress_var.set(f"Downloading: {percent:.1f}%")
+                    self.root.after(0, lambda: progress_var.set(f"Downloading: {percent:.1f}%"))
                 else:
-                    progress_var.set("Downloading...")
+                    self.root.after(0, lambda: progress_var.set("Downloading..."))
             elif d['status'] == 'finished':
-                progress_var.set("Processing...")
-            progress_window.update()
+                self.root.after(0, lambda: progress_var.set("Processing..."))
         
         def download_thread():
             try:
-                file_path = self._download_youtube(url, update_progress)
-                progress_window.after(0, lambda: self._on_youtube_downloaded(file_path, url, progress_window))
+                file_path = download_youtube(url, self.engine._youtube_dir, update_progress)
+                
+                # Xử lý metadata trong thread để không block UI
+                song = None
+                if file_path and os.path.exists(file_path):
+                    try:
+                        # Tạo Song từ file đã download
+                        song = Song.from_path(file_path)
+                        # Lấy thông tin từ YouTube URL
+                        info = get_youtube_info(url)
+                        if info:
+                            song.title = info.get('title', song.title)
+                            song.artist = info.get('artist', 'YouTube')
+                            song.duration = info.get('duration', 0)
+                            song.youtube_url = url  # Lưu YouTube URL
+                    except Exception as e:
+                        print(f"Error processing metadata: {e}")
+                
+                # Chỉ update UI trên main thread
+                self.root.after(0, lambda f=file_path, s=song, u=url, pw=progress_window: 
+                               self._on_youtube_downloaded(f, s, u, pw))
             except Exception as e:
-                progress_window.after(0, lambda: self._on_youtube_error(str(e), progress_window))
+                self.root.after(0, lambda err=str(e), pw=progress_window: 
+                               self._on_youtube_error(err, pw))
         
         threading.Thread(target=download_thread, daemon=True).start()
     
@@ -1283,25 +593,11 @@ class MelodifyApp:
             return
         
         try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'playlistend': 50,  # Giới hạn 50 videos
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],  # Tránh web_safari client
-                    }
-                },
-            }
+            entries = get_playlist_entries(url, max_entries=50)
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                entries = info.get('entries', [])
-                
-                if not entries:
-                    messagebox.showinfo("Playlist", "Playlist is empty or could not be accessed")
-                    return
+            if not entries:
+                messagebox.showinfo("Playlist", "Playlist is empty or could not be accessed")
+                return
                 
                 # Hỏi user có muốn download tất cả không
                 count = len(entries)
@@ -1332,98 +628,140 @@ class MelodifyApp:
                 
                 def download_playlist_thread():
                     downloaded = 0
+                    songs_to_add = []  # Collect songs để add sau
+                    
                     for i, entry in enumerate(entries):
                         if entry is None:
                             continue
                         
                         video_url = f"https://www.youtube.com/watch?v={entry.get('id', '')}"
-                        progress_window.after(0, lambda i=i+1, total=count: 
-                                            progress_var.set(f"Downloading video {i}/{total}..."))
+                        # Update progress trên main thread
+                        self.root.after(0, lambda idx=i+1, total=count: 
+                                      progress_var.set(f"Downloading video {idx}/{total}..."))
                         
                         try:
-                            file_path = self._download_youtube(video_url)
-                            if file_path:
-                                downloaded += 1
-                        except:
-                            pass
+                            file_path = download_youtube(video_url, self.engine._youtube_dir)
+                            if file_path and os.path.exists(file_path):
+                                # Xử lý metadata trong thread
+                                try:
+                                    song = Song.from_path(file_path)
+                                    # Lấy thông tin từ YouTube
+                                    info = get_youtube_info(video_url)
+                                    if info:
+                                        song.title = info.get('title', song.title)
+                                        song.artist = info.get('artist', 'YouTube')
+                                        song.duration = info.get('duration', 0)
+                                        song.youtube_url = video_url
+                                    songs_to_add.append(song)
+                                    downloaded += 1
+                                except Exception as e:
+                                    print(f"Error processing video {i+1}: {e}")
+                        except Exception as e:
+                            print(f"Error downloading video {i+1}: {e}")
                     
-                    progress_window.after(0, lambda: self._on_playlist_downloaded(downloaded, count, progress_window))
+                    # Add tất cả songs cùng lúc trên main thread để tránh block UI nhiều lần
+                    def add_all_songs():
+                        for song in songs_to_add:
+                            self.playlist.append(song)
+                        self._refresh_playlist_view()
+                    
+                    # Sử dụng root.after để đảm bảo UI update
+                    self.root.after(0, lambda d=downloaded, t=count, pw=progress_window, cb=add_all_songs: 
+                                  self._on_playlist_downloaded(d, t, pw, cb))
                 
                 threading.Thread(target=download_playlist_thread, daemon=True).start()
                 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process playlist: {str(e)}")
     
-    def _on_youtube_downloaded(self, file_path: Optional[str], url: str, progress_window):
-        """Xử lý sau khi download YouTube video xong"""
-        progress_window.destroy()
+    def _on_youtube_downloaded(self, file_path: Optional[str], song: Optional[Song], url: str, progress_window):
+        """Xử lý sau khi download YouTube video xong - chỉ update UI"""
+        try:
+            # Đóng progress window trước
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
+        except:
+            pass
         
-        if file_path:
-            # Tạo Song từ file đã download
-            song = Song.from_path(file_path)
-            # Lấy thông tin từ YouTube URL
-            if YT_DLP_AVAILABLE:
-                try:
-                    ydl_opts_info = {
-                        'quiet': True,
-                        'no_warnings': True,
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['android', 'web'],
-                            }
-                        },
-                    }
-                    with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        song.title = info.get('title', song.title)
-                        song.artist = info.get('uploader', 'YouTube')
-                        song.duration = info.get('duration', 0)
-                        song.youtube_url = url  # Lưu YouTube URL
-                except:
-                    pass
-            
-            self.playlist.append(song)
-            self._refresh_playlist_view()
-            self._update_status(f"✅ Added YouTube video: {song.title}")
+        if file_path and os.path.exists(file_path) and song:
+            try:
+                # Song đã được xử lý trong thread, chỉ cần thêm vào playlist
+                self.playlist.append(song)
+                # Refresh playlist view trong background để không block UI
+                self.root.after_idle(self._refresh_playlist_view)
+                self._update_status(f"✅ Added: {song.title}")
+            except Exception as e:
+                print(f"Error adding song: {e}")
+                self._update_status(f"❌ Error adding video: {str(e)}")
         else:
             self._update_status("❌ Failed to download YouTube video")
     
     def _on_youtube_error(self, error_msg: str, progress_window):
         """Xử lý lỗi download YouTube"""
-        progress_window.destroy()
-        messagebox.showerror("Download Error", f"Failed to download:\n{error_msg}")
+        try:
+            # Đóng progress window trước
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
+        except:
+            pass
+        
+        try:
+            messagebox.showerror("Download Error", f"Failed to download:\n{error_msg}")
+        except:
+            pass
+        
         self._update_status("❌ YouTube download failed")
     
-    def _on_playlist_downloaded(self, downloaded: int, total: int, progress_window):
+    def _on_playlist_downloaded(self, downloaded: int, total: int, progress_window, add_songs_callback=None):
         """Xử lý sau khi download playlist xong"""
-        progress_window.destroy()
-        self._refresh_playlist_view()
+        try:
+            # Đóng progress window trước
+            if progress_window and progress_window.winfo_exists():
+                progress_window.destroy()
+        except:
+            pass
+        
+        # Add songs nếu có callback
+        if add_songs_callback:
+            add_songs_callback()
+        else:
+            self._refresh_playlist_view()
+        
         self._update_status(f"✅ Downloaded {downloaded}/{total} videos from YouTube playlist")
     
     def _refresh_playlist_view(self):
-        """Cập nhật Treeview từ Linked List"""
-        # Xóa cũ
-        for item in self.playlist_tree.get_children():
-            self.playlist_tree.delete(item)
-        
-        # Thêm mới từ linked list
-        for i, song in enumerate(self.playlist):
-            # Thêm icon YouTube nếu có YouTube URL
-            title_display = song.title
-            if hasattr(song, 'youtube_url') and song.youtube_url:
-                title_display = "📺 " + title_display
+        """Cập nhật Treeview từ Linked List - optimized để không block UI"""
+        try:
+            # Xóa cũ
+            for item in self.playlist_tree.get_children():
+                self.playlist_tree.delete(item)
             
-            item_id = self.playlist_tree.insert("", tk.END,
-                                                values=(title_display, song.artist))
+            # Thêm mới từ linked list - batch để tránh block UI
+            items_to_add = []
+            for i, song in enumerate(self.playlist):
+                # Thêm icon YouTube nếu có YouTube URL
+                title_display = song.title
+                if hasattr(song, 'youtube_url') and song.youtube_url:
+                    title_display = "📺 " + title_display
+                
+                items_to_add.append((title_display, song.artist, song == self.playlist.current_song))
             
-            # Highlight current song
-            if song == self.playlist.current_song:
-                self.playlist_tree.selection_set(item_id)
-                self.playlist_tree.see(item_id)
-        
-        # Update count
-        self.playlist_count.config(text=f"{len(self.playlist)} songs")
-        self._update_ll_info()
+            # Insert tất cả cùng lúc
+            for i, (title, artist, is_current) in enumerate(items_to_add):
+                item_id = self.playlist_tree.insert("", tk.END,
+                                                    values=(title, artist))
+                
+                # Highlight current song
+                if is_current:
+                    self.playlist_tree.selection_set(item_id)
+                    self.playlist_tree.see(item_id)
+            
+            # Update count
+            if hasattr(self, 'playlist_count'):
+                self.playlist_count.config(text=f"{len(self.playlist)} songs")
+            self._update_ll_info()
+        except Exception as e:
+            print(f"Error refreshing playlist view: {e}")
     
     def _on_song_double_click(self, event):
         """Xử lý double-click vào bài hát"""
@@ -1451,22 +789,34 @@ class MelodifyApp:
             return
         
         if not self.engine.is_playing:
+            # Chưa playing, bắt đầu phát
             if not self.engine.is_paused:
                 self.play_current_song()
             else:
+                # Đang pause, resume
                 self.engine.play()
                 # Resume video
-                if self.video_player:
+                if self.video_player and self.engine._has_video:
                     self.video_player.resume()
                 self.play_btn.icon = "⏸️"
                 self.play_btn._draw()
         else:
-            self.engine.pause()
-            # Pause video
-            if self.video_player:
-                self.video_player.pause()
-            self.play_btn.icon = "▶️"
-            self.play_btn._draw()
+            # Đang playing, pause
+            if self.engine.is_paused:
+                # Đang pause, resume
+                self.engine.play()
+                if self.video_player and self.engine._has_video:
+                    self.video_player.resume()
+                self.play_btn.icon = "⏸️"
+                self.play_btn._draw()
+            else:
+                # Đang playing, pause
+                self.engine.pause()
+                # Pause video
+                if self.video_player and self.engine._has_video:
+                    self.video_player.pause()
+                self.play_btn.icon = "▶️"
+                self.play_btn._draw()
     
     def next_song(self):
         """Bài tiếp theo"""
@@ -1565,30 +915,50 @@ class MelodifyApp:
             self._update_status("🗑️ Playlist cleared")
     
     def _on_seek(self, value):
-        """Seek trong bài hát"""
+        """Seek trong bài hát - reload và play từ vị trí mới"""
         if not hasattr(self.engine, 'duration') or not self.engine.duration or self.engine.duration <= 0:
             return
         
         # value từ slider là giây (vì max_val = duration)
         position_seconds = max(0, min(value, self.engine.duration))
         
-        # Seek video trước (nếu có)
-        if self.video_player and self.engine._has_video:
-            self.video_player.seek(position_seconds)
+        # Nếu đang phát hoặc đã load, cần reload để seek chính xác
+        song = self.playlist.current_song
+        if not song:
+            return
         
-        # Seek audio - pygame không hỗ trợ seek tốt với mọi format
-        # Chỉ cập nhật current_pos để UI đồng bộ
-        if self.engine.is_playing or self.engine.is_paused:
+        was_playing = self.engine.is_playing and not self.engine.is_paused
+        
+        # Dừng hiện tại
+        self.engine.stop()
+        if self.video_player:
+            self.video_player.stop()
+        
+        # Load lại file
+        if self.engine.load(song.path):
+            # Seek video trước (nếu có)
+            if self.video_player and self.engine._has_video and self.engine._video_path:
+                self.video_player.open(self.engine._video_path)
+                self.video_player.seek(position_seconds)
+            
+            # Play từ vị trí mới
+            if was_playing:
+                # Thử play từ vị trí cụ thể
+                self.engine.play(start_pos=position_seconds)
+                if self.video_player and self.engine._has_video:
+                    self.video_player.play()
+            else:
+                # Chỉ set position, không play
+                self.engine.current_pos = position_seconds
+                if self.video_player and self.engine._has_video:
+                    self.video_player.seek(position_seconds)
+                    self.video_player.pause()
+            
+            # Cập nhật UI - đảm bảo slider không bị reset
+            self.progress_slider.value = position_seconds
+            self.time_current.config(text=self._format_time(position_seconds))
+            # Cập nhật current_pos trong engine để get_pos() trả về đúng
             self.engine.current_pos = position_seconds
-            # Thử seek nếu có thể (có thể không hoạt động với một số format)
-            if PYGAME_AVAILABLE:
-                try:
-                    # pygame.mixer.music.set_pos() chỉ hoạt động với một số format
-                    pygame.mixer.music.set_pos(position_seconds)
-                except:
-                    # Nếu không được, chỉ cập nhật current_pos
-                    # Note: Seek có thể không hoạt động hoàn hảo với mọi format
-                    pass
     
     def _on_volume_change(self, value):
         """Thay đổi volume"""
@@ -1602,9 +972,21 @@ class MelodifyApp:
             vinyl_rotation = 0
             while self.running:
                 try:
-                    if self.engine.is_playing and self.engine.is_active():
-                        # Update progress
-                        pos = self.engine.get_pos()
+                    # Update progress khi đang playing (không pause)
+                    if self.engine.is_playing and not self.engine.is_paused:
+                        # Với video, cần sync với video player
+                        if self.engine._has_video and self.video_player and self.video_player.is_playing:
+                            # Lấy position từ audio engine
+                            pos = self.engine.get_pos()
+                            # Sync video với audio
+                            self.video_player.sync_with_audio(pos)
+                        elif self.engine.is_active():
+                            # Chỉ audio, lấy position từ engine
+                            pos = self.engine.get_pos()
+                        else:
+                            # Engine không active nhưng đang playing (có thể đang load)
+                            pos = self.engine.current_pos
+                        
                         # Cập nhật slider (đảm bảo max_val đã được set)
                         if self.progress_slider.max_val > 0:
                             self.progress_slider.value = min(pos, self.progress_slider.max_val)
@@ -1615,9 +997,16 @@ class MelodifyApp:
                             vinyl_rotation = (vinyl_rotation + 2) % 360
                             self._draw_vinyl(vinyl_rotation)
                     
-                    # Check if song ended
-                    if self.engine.is_playing and not self.engine.is_active():
-                        self.root.after(0, self._on_song_end)
+                    # Check if song ended - CHỈ khi đang playing và KHÔNG pause
+                    # Với video, cần check cả video player
+                    if self.engine.is_playing and not self.engine.is_paused:
+                        if self.engine._has_video and self.video_player:
+                            # Với video, check cả video player và audio engine
+                            if not self.video_player.is_playing and not self.engine.is_active():
+                                self.root.after(0, self._on_song_end)
+                        elif not self.engine.is_active():
+                            # Chỉ audio, check engine
+                            self.root.after(0, self._on_song_end)
                     
                     time.sleep(0.05)
                 except:
