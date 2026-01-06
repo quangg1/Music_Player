@@ -16,7 +16,6 @@ except ImportError:
     print("⚠️ pygame not installed. Run: pip install pygame")
 
 # Video support - Set environment trước khi import để tránh FFmpeg threading issues
-import os
 import sys
 
 # Suppress FFmpeg assertion errors - chúng không ảnh hưởng đến functionality
@@ -135,6 +134,10 @@ class MusicEngine:
         self._has_video = False  # Whether current file has video
         self._is_youtube = False  # Whether current file is from YouTube
         self._convert_lock = threading.Lock()  # Lock cho FFmpeg convert
+        
+        # Tracking position sau khi seek
+        self._play_start_time = None
+        self._play_start_pos = 0.0
         
         # Tạo thư mục temp
         if not os.path.exists(self._temp_dir):
@@ -311,18 +314,15 @@ class MusicEngine:
         import time
         
         if self.is_paused:
+            # Resume từ pause - lấy position hiện tại và tiếp tục từ đó
             pygame.mixer.music.unpause()
-            # Cập nhật start time để track position đúng
-            if start_pos > 0:
-                self._play_start_time = time.time()
-                self._play_start_pos = start_pos
-                self.current_pos = start_pos
-            elif hasattr(self, '_play_start_time') and hasattr(self, '_play_start_pos'):
-                # Resume từ vị trí đã pause - tính lại start time
-                elapsed = time.time() - self._play_start_time
-                self._play_start_pos = self._play_start_pos + elapsed
-                self._play_start_time = time.time()
-                self.current_pos = self._play_start_pos
+            # Nếu có _play_start_pos đã được lưu khi pause, dùng nó
+            if hasattr(self, '_play_start_pos'):
+                current_pos = self._play_start_pos
+            else:
+                current_pos = self.current_pos
+            self._play_start_time = time.time()
+            self._play_start_pos = current_pos
         else:
             # Play mới
             if start_pos > 0:
@@ -331,21 +331,34 @@ class MusicEngine:
                 pygame.mixer.music.play()
                 self._play_start_time = time.time()
                 self._play_start_pos = start_pos
-                self.current_pos = start_pos
-                # Thử seek (có thể không hoạt động với MP3/MP4)
+                # Thử seek (có thể không hoạt động)
                 try:
                     pygame.mixer.music.set_pos(start_pos)
                 except:
                     pass
             else:
+                # Play từ đầu - set tracking ngay
                 pygame.mixer.music.play()
+                import time
                 self._play_start_time = time.time()
                 self._play_start_pos = 0.0
+                # Đảm bảo current_pos được set
                 self.current_pos = 0.0
         
         self.is_playing = True
         self.is_paused = False
-        self.current_pos = start_pos
+        
+        # Set current_pos dựa trên trạng thái
+        if self.is_paused:  # Resume từ pause
+            self.current_pos = self._play_start_pos
+        else:  # Play mới
+            self.current_pos = start_pos
+        
+        # Đảm bảo tracking variables được set (fallback)
+        if not hasattr(self, '_play_start_time') or self._play_start_time is None:
+            import time
+            self._play_start_time = time.time()
+            self._play_start_pos = start_pos if start_pos > 0 else 0.0
     
     def pause(self) -> None:
         if not PYGAME_AVAILABLE:
@@ -354,6 +367,12 @@ class MusicEngine:
         if self.is_playing and not self.is_paused:
             pygame.mixer.music.pause()
             self.is_paused = True
+            # Lưu lại position hiện tại khi pause
+            if hasattr(self, '_play_start_time') and self._play_start_time is not None:
+                import time
+                elapsed = time.time() - self._play_start_time
+                self._play_start_pos = self._play_start_pos + elapsed
+                self._play_start_time = None  # Reset để không tính elapsed khi pause
     
     def stop(self) -> None:
         if not PYGAME_AVAILABLE:
@@ -364,6 +383,9 @@ class MusicEngine:
         self.current_pos = 0
         self._video_path = None
         self._has_video = False
+        # Reset tracking
+        self._play_start_time = None
+        self._play_start_pos = 0.0
         self.cleanup_temp()
     
     def seek(self, position: float) -> None:
@@ -434,29 +456,61 @@ class MusicEngine:
             pygame.mixer.music.set_volume(self._volume)
     
     def get_pos(self) -> float:
-        """Lấy vị trí hiện tại (giây) - track thủ công sau khi seek"""
+        """Lấy vị trí hiện tại (giây) - track thủ công nếu đã seek"""
         if not PYGAME_AVAILABLE:
             return self.current_pos
         
-        import time
-        
-        # Nếu đang playing và có track start time, tính từ đó
+        # Nếu đang playing và không pause, luôn dùng manual tracking nếu có
         if self.is_playing and not self.is_paused:
-            if hasattr(self, '_play_start_time') and hasattr(self, '_play_start_pos'):
+            # Ưu tiên: dùng manual tracking nếu có _play_start_time
+            if (hasattr(self, '_play_start_time') and hasattr(self, '_play_start_pos') and 
+                self._play_start_time is not None):
+                import time
                 elapsed = time.time() - self._play_start_time
                 calculated_pos = self._play_start_pos + elapsed
+                
+                # Giới hạn trong duration
+                if self.duration > 0:
+                    calculated_pos = min(calculated_pos, self.duration)
+                
+                # Đảm bảo không âm
+                calculated_pos = max(0, calculated_pos)
+                
                 # Cập nhật current_pos
-                self.current_pos = min(calculated_pos, self.duration)
-                return self.current_pos
+                self.current_pos = calculated_pos
+                return calculated_pos
+            else:
+                # Nếu không có tracking, set tracking ngay từ đầu
+                import time
+                if not hasattr(self, '_play_start_time') or self._play_start_time is None:
+                    self._play_start_time = time.time()
+                    self._play_start_pos = 0.0
+                    self.current_pos = 0.0
+                    return 0.0
+            
+            # Fallback: dùng pygame position và set tracking nếu chưa có
+            pygame_pos = pygame.mixer.music.get_pos() / 1000.0
+            # pygame_pos có thể là 0 ngay sau khi play, nhưng vẫn cần set tracking
+            if pygame_pos >= 0:
+                # Nếu chưa có tracking, set tracking từ pygame position
+                if not hasattr(self, '_play_start_time') or self._play_start_time is None:
+                    import time
+                    self._play_start_time = time.time()
+                    self._play_start_pos = max(0, pygame_pos)
+                    return max(0, pygame_pos)
+                else:
+                    # Đã có tracking, dùng manual tracking
+                    import time
+                    elapsed = time.time() - self._play_start_time
+                    calculated_pos = self._play_start_pos + elapsed
+                    if self.duration > 0:
+                        calculated_pos = min(calculated_pos, self.duration)
+                    calculated_pos = max(0, calculated_pos)
+                    self.current_pos = calculated_pos
+                    return calculated_pos
         
-        # Fallback: dùng pygame position nếu có
-        pygame_pos = pygame.mixer.music.get_pos() / 1000.0
-        if pygame_pos > 0:
-            self.current_pos = min(pygame_pos, self.duration)
-            return self.current_pos
-        
-        # Trả về current_pos đã được set
-        return self.current_pos
+        # Nếu không playing hoặc đang pause, trả về current_pos
+        return max(0, self.current_pos)
     
     def is_active(self) -> bool:
         if not PYGAME_AVAILABLE:
@@ -464,63 +518,86 @@ class MusicEngine:
         return pygame.mixer.music.get_busy()
     
     def _get_duration(self, path: str) -> float:
-        """Lấy duration chính xác từ file"""
+        """Lấy duration chính xác từ file - sử dụng FFmpeg/pydub"""
+        # Thử dùng pydub để lấy duration chính xác
+        if PYDUB_AVAILABLE:
+            try:
+                from pydub import AudioSegment
+                audio = AudioSegment.from_file(path)
+                duration_seconds = len(audio) / 1000.0  # pydub trả về milliseconds
+                if duration_seconds > 0:
+                    return duration_seconds
+            except Exception as e:
+                print(f"Warning: Could not get duration with pydub: {e}")
+        
+        # Thử dùng FFmpeg để lấy duration
+        if FFMPEG_AVAILABLE:
+            try:
+                import subprocess
+                import shutil
+                import json
+                
+                ffprobe_path = shutil.which("ffprobe")
+                if not ffprobe_path:
+                    # Thử tìm ffprobe trong cùng thư mục với ffmpeg
+                    ffmpeg_path = shutil.which("ffmpeg")
+                    if ffmpeg_path:
+                        ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
+                        if not os.path.exists(ffprobe_path):
+                            ffprobe_path = None
+                
+                if ffprobe_path:
+                    cmd = [
+                        ffprobe_path,
+                        "-v", "quiet",
+                        "-print_format", "json",
+                        "-show_format",
+                        path
+                    ]
+                    
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
+                    
+                    if result.returncode == 0:
+                        data = json.loads(result.stdout)
+                        if 'format' in data and 'duration' in data['format']:
+                            duration_seconds = float(data['format']['duration'])
+                            if duration_seconds > 0:
+                                return duration_seconds
+            except Exception as e:
+                print(f"Warning: Could not get duration with ffprobe: {e}")
+        
+        # Thử dùng OpenCV cho video files
+        if VIDEO_AVAILABLE:
+            try:
+                cap = cv2.VideoCapture(path)
+                if cap.isOpened():
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    cap.release()
+                    if fps > 0 and frame_count > 0:
+                        duration_seconds = frame_count / fps
+                        if duration_seconds > 0:
+                            return duration_seconds
+            except Exception as e:
+                print(f"Warning: Could not get duration with OpenCV: {e}")
+        
+        # Fallback: estimate from file size (không chính xác)
         try:
-            # Thử dùng pydub để lấy duration chính xác
-            if PYDUB_AVAILABLE:
-                try:
-                    from pydub import AudioSegment
-                    audio = AudioSegment.from_file(path)
-                    duration_seconds = len(audio) / 1000.0  # pydub trả về milliseconds
-                    if duration_seconds > 0:
-                        return duration_seconds
-                except:
-                    pass
-            
-            # Thử dùng FFmpeg để lấy duration
-            if FFMPEG_AVAILABLE:
-                try:
-                    import subprocess
-                    import shutil
-                    import json
-                    
-                    ffprobe_path = shutil.which("ffprobe")
-                    if not ffprobe_path:
-                        # Thử tìm ffprobe từ ffmpeg path
-                        ffmpeg_path = shutil.which("ffmpeg")
-                        if ffmpeg_path:
-                            ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
-                    
-                    if ffprobe_path:
-                        cmd = [
-                            ffprobe_path,
-                            "-v", "quiet",
-                            "-print_format", "json",
-                            "-show_format",
-                            path
-                        ]
-                        result = subprocess.run(
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            timeout=10,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                        )
-                        if result.returncode == 0:
-                            data = json.loads(result.stdout)
-                            duration = float(data.get('format', {}).get('duration', 0))
-                            if duration > 0:
-                                return duration
-                except:
-                    pass
-            
-            # Fallback: estimate from file size
             size = os.path.getsize(path)
-            # Giả sử bitrate 192kbps cho audio, 1MB/s cho video
-            if self._has_video:
-                return size / (1024 * 1024)  # 1MB/s
+            # Giả sử bitrate 192kbps cho audio, hoặc ước tính cho video
+            ext = os.path.splitext(path)[1].lower()
+            if ext in self.VIDEO_FORMATS:
+                # Video thường có bitrate cao hơn
+                estimated_bitrate = 2000 * 1000 / 8  # 2Mbps
             else:
-                return size / (192 * 1000 / 8)  # 192kbps
+                estimated_bitrate = 192 * 1000 / 8  # 192kbps
+            return size / estimated_bitrate
         except:
             return 180.0  # Default 3 phút
 
@@ -686,7 +763,11 @@ class VideoPlayer:
             if ret and frame is not None:
                 # Convert BGR to RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = cv2.resize(frame, (280, 280))
+                
+                # Lấy kích thước canvas thực tế
+                canvas_width = self.canvas.winfo_width() if self.canvas.winfo_width() > 1 else 380
+                canvas_height = self.canvas.winfo_height() if self.canvas.winfo_height() > 1 else 380
+                frame = cv2.resize(frame, (canvas_width, canvas_height))
                 
                 # Convert to PhotoImage
                 image = Image.fromarray(frame)
@@ -698,7 +779,7 @@ class VideoPlayer:
                 
                 # Hiển thị image ở giữa canvas
                 self.video_image_id = self.canvas.create_image(
-                    140, 140,
+                    canvas_width // 2, canvas_height // 2,
                     image=photo, anchor=tk.CENTER
                 )
                 self.canvas.photo = photo  # Keep a reference
@@ -777,9 +858,9 @@ class VideoPlayer:
             # Convert BGR to RGB
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Resize để fit canvas (280x280)
-            canvas_width = 280
-            canvas_height = 280
+            # Lấy kích thước canvas thực tế
+            canvas_width = self.canvas.winfo_width() if self.canvas.winfo_width() > 1 else 380
+            canvas_height = self.canvas.winfo_height() if self.canvas.winfo_height() > 1 else 380
             frame = cv2.resize(frame, (canvas_width, canvas_height))
             
             # Convert to PhotoImage

@@ -12,11 +12,11 @@ import threading
 import time
 import shutil
 import json
-from pathlib import Path
 from typing import Optional
 import random
 from datetime import datetime
 import webbrowser
+import traceback
 
 # Import từ các module đã tách
 from theme import Theme
@@ -36,9 +36,9 @@ class MelodifyApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("🎵 Melodify - Music Player")
-        self.root.geometry("900x700")
+        self.root.geometry("1100x820")
         self.root.configure(bg=Theme.BG_DARK)
-        self.root.minsize(800, 600)
+        self.root.minsize(1000, 720)
         
         # Icon nếu có
         try:
@@ -55,7 +55,7 @@ class MelodifyApp:
         # State
         self.repeat_mode = 0  # 0: off, 1: all, 2: one
         self.shuffle_mode = False
-        self.update_thread = None
+        self._vinyl_rotation = 0
         self.running = True
         
         # Stats
@@ -196,8 +196,8 @@ class MelodifyApp:
         """Xây dựng giao diện"""
         
         # ===== HEADER =====
-        header = tk.Frame(self.root, bg=Theme.BG_DARK, height=80)
-        header.pack(fill=tk.X, padx=20, pady=10)
+        header = tk.Frame(self.root, bg=Theme.BG_DARK, height=70)
+        header.pack(fill=tk.X, padx=15, pady=8)
         header.pack_propagate(False)
         
         # Logo
@@ -245,15 +245,16 @@ class MelodifyApp:
         
         # ===== MAIN CONTENT =====
         content = tk.Frame(self.root, bg=Theme.BG_DARK)
-        content.pack(fill=tk.BOTH, expand=True, padx=20)
+        content.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 5))
         
-        # Left: Playlist
-        playlist_frame = tk.Frame(content, bg=Theme.BG_CARD)
-        playlist_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        # Left: Playlist (đủ rộng để hiển thị đầy đủ)
+        playlist_frame = tk.Frame(content, bg=Theme.BG_CARD, width=400)
+        playlist_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 10))
+        playlist_frame.pack_propagate(False)
         
         # Playlist header
         pl_header = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
-        pl_header.pack(fill=tk.X, padx=15, pady=10)
+        pl_header.pack(fill=tk.X, padx=12, pady=8)
         
         tk.Label(pl_header, text="📋 PLAYLIST", 
                 font=("Segoe UI", 14, "bold"),
@@ -266,7 +267,7 @@ class MelodifyApp:
         
         # Playlist listbox (using Treeview)
         tree_frame = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
         
         self.playlist_tree = ttk.Treeview(tree_frame, style="Playlist.Treeview",
                                          columns=("title", "artist"),
@@ -274,8 +275,9 @@ class MelodifyApp:
         
         self.playlist_tree.heading("title", text="Title")
         self.playlist_tree.heading("artist", text="Artist")
-        self.playlist_tree.column("title", width=250)
-        self.playlist_tree.column("artist", width=150)
+        # Tăng width để hiển thị đầy đủ, không bị truncate
+        self.playlist_tree.column("title", width=240, minwidth=200)
+        self.playlist_tree.column("artist", width=140, minwidth=120)
         
         scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, 
                                  command=self.playlist_tree.yview)
@@ -290,33 +292,33 @@ class MelodifyApp:
         
         # Playlist actions
         pl_actions = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
-        pl_actions.pack(fill=tk.X, padx=10, pady=10)
+        pl_actions.pack(fill=tk.X, padx=8, pady=8)
         
         for text, cmd in [("🔍 Search", self.search_song),
                          ("❤️ Favorites", self.show_favorites),
                          ("🗑️ Clear", self.clear_playlist), 
                          ("🔀 Shuffle", self.shuffle_playlist)]:
             btn = tk.Button(pl_actions, text=text,
-                           font=("Segoe UI Symbol", 10),
+                           font=("Segoe UI Symbol", 9),
                            bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
                            activebackground=Theme.ACCENT_TERTIARY,
-                           border=0, padx=15, pady=5,
+                           border=0, padx=12, pady=4,
                            cursor="hand2", command=cmd)
-            btn.pack(side=tk.LEFT, padx=5)
+            btn.pack(side=tk.LEFT, padx=3)
         
-        # Right: Now Playing
-        now_playing = tk.Frame(content, bg=Theme.BG_CARD, width=320)
-        now_playing.pack(side=tk.RIGHT, fill=tk.Y)
-        now_playing.pack_propagate(False)
+        # Right: Now Playing (cân bằng với playlist)
+        now_playing = tk.Frame(content, bg=Theme.BG_CARD, width=450)
+        now_playing.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        # Không dùng pack_propagate(False) để frame tự điều chỉnh và hiển thị đủ elements
         
-        # Album art placeholder
+        # Album art placeholder (vừa phải, fit trong window)
         art_frame = tk.Frame(now_playing, bg=Theme.BG_DARK, 
-                            width=280, height=280)
-        art_frame.pack(pady=20, padx=20)
+                            width=380, height=340)
+        art_frame.pack(pady=10, padx=15)
         art_frame.pack_propagate(False)
         
         # Vinyl animation / Video display
-        self.vinyl = tk.Canvas(art_frame, width=280, height=280,
+        self.vinyl = tk.Canvas(art_frame, width=380, height=340,
                               bg=Theme.BG_DARK, highlightthickness=0)
         self.vinyl.pack()
         self._draw_vinyl()
@@ -327,25 +329,26 @@ class MelodifyApp:
         
         # Song info
         info_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
-        info_frame.pack(fill=tk.X, padx=20)
+        info_frame.pack(fill=tk.X, padx=20, pady=(0, 6))
         
         self.song_title = tk.Label(info_frame, text="No song playing",
-                                  font=("Segoe UI", 16, "bold"),
+                                  font=("Segoe UI", 18, "bold"),
                                   bg=Theme.BG_CARD, fg=Theme.TEXT_PRIMARY,
-                                  wraplength=280)
+                                  wraplength=380)
         self.song_title.pack()
         
         self.song_artist = tk.Label(info_frame, text="Add songs to start",
-                                   font=("Segoe UI", 12),
-                                   bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY)
+                                   font=("Segoe UI", 13),
+                                   bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY,
+                                   wraplength=380)
         self.song_artist.pack()
         
         # Progress
         progress_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
-        progress_frame.pack(fill=tk.X, padx=20, pady=20)
+        progress_frame.pack(fill=tk.X, padx=20, pady=8)
         
         # Progress slider - sẽ cập nhật max_val khi có bài hát
-        self.progress_slider = ModernSlider(progress_frame, width=280, height=24,
+        self.progress_slider = ModernSlider(progress_frame, width=380, height=26,
                                            min_val=0, max_val=100, value=0,
                                            command=self._on_seek)
         self.progress_slider.pack()
@@ -365,7 +368,7 @@ class MelodifyApp:
         
         # ===== CONTROLS =====
         controls_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
-        controls_frame.pack(pady=10)
+        controls_frame.pack(pady=5)
         
         # Shuffle button
         self.shuffle_btn = GlowButton(controls_frame, icon="🔀",
@@ -398,18 +401,21 @@ class MelodifyApp:
                                     command=self.toggle_repeat)
         self.repeat_btn.pack(side=tk.LEFT, padx=5)
         
-        # Volume
-        vol_frame = tk.Frame(now_playing, bg=Theme.BG_CARD)
-        vol_frame.pack(fill=tk.X, padx=20, pady=20)
+        # Volume - đảm bảo hiển thị rõ ràng
+        vol_frame = tk.Frame(now_playing, bg=Theme.BG_CARD, height=40)
+        vol_frame.pack(fill=tk.X, padx=20, pady=(6, 8))
+        vol_frame.pack_propagate(False)
         
-        tk.Label(vol_frame, text="🔊",
+        vol_label = tk.Label(vol_frame, text="🔊",
                 font=("Segoe UI Symbol", 14),
-                bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY).pack(side=tk.LEFT)
+                bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY)
+        vol_label.pack(side=tk.LEFT, padx=(0, 8))
         
-        self.volume_slider = ModernSlider(vol_frame, width=200, height=20,
+        # Volume slider - fit trong frame còn lại
+        self.volume_slider = ModernSlider(vol_frame, width=300, height=22,
                                          min_val=0, max_val=100, value=70,
                                          command=self._on_volume_change)
-        self.volume_slider.pack(side=tk.LEFT, padx=10)
+        self.volume_slider.pack(side=tk.LEFT, padx=5)
         
         # ===== STATUS BAR =====
         status = tk.Frame(self.root, bg=Theme.BG_CARD, height=30)
@@ -437,33 +443,97 @@ class MelodifyApp:
         self.ll_info.pack(side=tk.RIGHT, padx=10)
     
     def _draw_vinyl(self, rotation=0):
-        """Vẽ đĩa vinyl với animation"""
+        """Vẽ đĩa vinyl với animation nâng cao"""
         self.vinyl.delete("all")
-        cx, cy = 140, 140
+        # Lấy kích thước canvas thực tế
+        canvas_width = self.vinyl.winfo_width() if self.vinyl.winfo_width() > 1 else 380
+        canvas_height = self.vinyl.winfo_height() if self.vinyl.winfo_height() > 1 else 380
+        cx, cy = canvas_width // 2, canvas_height // 2
+        radius = min(canvas_width, canvas_height) // 2 - 10
         
-        # Outer ring
-        self.vinyl.create_oval(10, 10, 270, 270,
-                              fill=Theme.BG_CARD, outline=Theme.TEXT_MUTED, width=2)
+        # Shadow effect
+        self.vinyl.create_oval(cx - radius + 2, cy - radius + 2, 
+                              cx + radius + 2, cy + radius + 2,
+                              fill="#000000", outline="", width=0)
         
-        # Vinyl grooves
-        for r in range(30, 120, 8):
+        # Outer ring với gradient effect
+        self.vinyl.create_oval(cx - radius, cy - radius, 
+                              cx + radius, cy + radius,
+                              fill=Theme.BG_CARD, outline=Theme.ACCENT_PRIMARY, width=3)
+        
+        # Vinyl grooves với animation
+        import math
+        groove_start = radius * 0.15
+        groove_end = radius * 0.85
+        for i, r in enumerate(range(int(groove_start), int(groove_end), int(radius * 0.1))):
+            # Tạo hiệu ứng depth với opacity
+            alpha = 0.3 + (i % 3) * 0.2
+            color_intensity = int(80 * alpha)
+            groove_color = f"#{color_intensity:02x}{color_intensity:02x}{color_intensity + 20:02x}"
+            
+            # Groove với slight rotation animation
+            groove_rotation = rotation + i * 2
             self.vinyl.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                  outline=Theme.TEXT_MUTED, width=1)
+                                  outline=groove_color, width=1)
         
-        # Center label
-        self.vinyl.create_oval(cx - 40, cy - 40, cx + 40, cy + 40,
-                              fill=Theme.ACCENT_PRIMARY, outline="")
-        self.vinyl.create_oval(cx - 8, cy - 8, cx + 8, cy + 8,
+        # Center label với glow effect (scale theo size)
+        center_radius = int(radius * 0.15)
+        center_glow_radius = int(radius * 0.2)
+        for glow in range(3):
+            alpha = 0.2 - glow * 0.05
+            glow_color = self._hex_with_alpha(Theme.ACCENT_PRIMARY, int(alpha * 255))
+            self.vinyl.create_oval(cx - center_glow_radius + glow, cy - center_glow_radius + glow,
+                                 cx + center_glow_radius - glow, cy + center_glow_radius - glow,
+                                 fill="", outline=glow_color, width=1)
+        
+        self.vinyl.create_oval(cx - center_radius, cy - center_radius, 
+                              cx + center_radius, cy + center_radius,
+                              fill=Theme.ACCENT_PRIMARY, outline=Theme.ACCENT_SECONDARY, width=3)
+        center_hole = int(center_radius * 0.2)
+        self.vinyl.create_oval(cx - center_hole, cy - center_hole, 
+                              cx + center_hole, cy + center_hole,
                               fill=Theme.BG_DARK, outline="")
         
-        # Reflection effect
-        import math
+        # Reflection effect với multiple highlights (scale theo size)
         angle = math.radians(rotation)
-        x1 = cx + 80 * math.cos(angle)
-        y1 = cy + 80 * math.sin(angle)
-        x2 = cx + 100 * math.cos(angle)
-        y2 = cy + 100 * math.sin(angle)
-        self.vinyl.create_line(x1, y1, x2, y2, fill=Theme.TEXT_MUTED, width=3)
+        highlight_start = int(radius * 0.6)
+        for i in range(3):
+            offset = int(radius * 0.15 * i)
+            x1 = cx + (highlight_start + offset) * math.cos(angle)
+            y1 = cy + (highlight_start + offset) * math.sin(angle)
+            x2 = cx + (highlight_start + int(radius * 0.15) + offset) * math.cos(angle)
+            y2 = cy + (highlight_start + int(radius * 0.15) + offset) * math.sin(angle)
+            alpha = 0.8 - i * 0.2
+            highlight_color = self._hex_with_alpha(Theme.TEXT_PRIMARY, int(alpha * 255))
+            self.vinyl.create_line(x1, y1, x2, y2, fill=highlight_color, width=3 - i)
+        
+        # Particle effects (small dots) - scale theo size
+        if hasattr(self, '_particle_angle'):
+            self._particle_angle = (self._particle_angle + 5) % 360
+        else:
+            self._particle_angle = 0
+        
+        particle_base_radius = int(radius * 0.8)
+        for i in range(8):
+            particle_angle = math.radians(self._particle_angle + i * 45)
+            particle_radius = particle_base_radius + (i % 3) * int(radius * 0.05)
+            px = cx + particle_radius * math.cos(particle_angle)
+            py = cy + particle_radius * math.sin(particle_angle)
+            particle_size = max(2, int(radius * 0.01))
+            self.vinyl.create_oval(px - particle_size, py - particle_size, 
+                                  px + particle_size, py + particle_size,
+                                  fill=Theme.ACCENT_SECONDARY, outline="")
+    
+    def _hex_with_alpha(self, hex_color, alpha):
+        """Convert hex color với alpha"""
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        bg_r, bg_g, bg_b = 18, 18, 26  # BG_CARD
+        new_r = int(r * (alpha/255) + bg_r * (1 - alpha/255))
+        new_g = int(g * (alpha/255) + bg_g * (1 - alpha/255))
+        new_b = int(b * (alpha/255) + bg_b * (1 - alpha/255))
+        return f"#{new_r:02x}{new_g:02x}{new_b:02x}"
     
     # ==================== ACTIONS ====================
     
@@ -537,6 +607,9 @@ class MelodifyApp:
         progress_window.transient(self.root)
         progress_window.grab_set()
         
+        # Flag để track xem window đã đóng chưa
+        progress_window._closed = False
+        
         status_label = tk.Label(progress_window, text="Downloading...",
                                font=("Segoe UI", 11),
                                bg=Theme.BG_DARK, fg=Theme.TEXT_PRIMARY)
@@ -548,6 +621,19 @@ class MelodifyApp:
                                  bg=Theme.BG_DARK, fg=Theme.TEXT_SECONDARY)
         progress_label.pack(pady=10)
         
+        # Timeout để đảm bảo window luôn đóng sau 5 phút (fallback)
+        def timeout_close():
+            if not progress_window._closed:
+                try:
+                    if progress_window.winfo_exists():
+                        progress_window._closed = True
+                        progress_window.destroy()
+                        self._update_status("⚠️ Download timeout - window closed")
+                except:
+                    pass
+        
+        timeout_id = self.root.after(300000, timeout_close)  # 5 phút timeout
+        
         def update_progress(d):
             if d['status'] == 'downloading':
                 if 'total_bytes' in d:
@@ -556,34 +642,99 @@ class MelodifyApp:
                 else:
                     self.root.after(0, lambda: progress_var.set("Downloading..."))
             elif d['status'] == 'finished':
-                self.root.after(0, lambda: progress_var.set("Processing..."))
+                self.root.after(0, lambda: progress_var.set("✅ Download completed! Processing..."))
         
         def download_thread():
             try:
                 file_path = download_youtube(url, self.engine._youtube_dir, update_progress)
                 
+                # Cập nhật progress window để hiển thị "Tải xong"
+                self.root.after(0, lambda: progress_var.set("✅ Download completed! Adding to playlist..."))
+                
                 # Xử lý metadata trong thread để không block UI
                 song = None
                 if file_path and os.path.exists(file_path):
                     try:
-                        # Tạo Song từ file đã download
+                        # Tạo Song từ file đã download (nhanh, chỉ đọc metadata cơ bản)
                         song = Song.from_path(file_path)
-                        # Lấy thông tin từ YouTube URL
-                        info = get_youtube_info(url)
-                        if info:
-                            song.title = info.get('title', song.title)
-                            song.artist = info.get('artist', 'YouTube')
-                            song.duration = info.get('duration', 0)
-                            song.youtube_url = url  # Lưu YouTube URL
+                        song.youtube_url = url  # Lưu YouTube URL ngay
+                        
+                        # Lấy thông tin từ YouTube URL (có thể chậm, nhưng trong background thread)
+                        # Nếu get_youtube_info chậm, vẫn có metadata từ file
+                        try:
+                            info = get_youtube_info(url)
+                            if info:
+                                song.title = info.get('title', song.title)
+                                song.artist = info.get('artist', 'YouTube')
+                                song.duration = info.get('duration', 0)
+                        except Exception as e:
+                            # Nếu không lấy được info từ YouTube, dùng metadata từ file
+                            print(f"Warning: Could not get YouTube info: {e}")
                     except Exception as e:
                         print(f"Error processing metadata: {e}")
                 
-                # Chỉ update UI trên main thread
-                self.root.after(0, lambda f=file_path, s=song, u=url, pw=progress_window: 
-                               self._on_youtube_downloaded(f, s, u, pw))
+                # Chỉ update UI trên main thread - đảm bảo callback luôn được gọi
+                # Sử dụng default parameters để tránh closure issues
+                def callback(f=file_path, s=song, u=url, pw=progress_window, tid=timeout_id, pv=progress_var):
+                    try:
+                        # Hủy timeout vì đã hoàn thành
+                        try:
+                            self.root.after_cancel(tid)
+                        except:
+                            pass
+                        
+                        # Add vào playlist NGAY, không delay
+                        self._on_youtube_downloaded(f, s, u, pw)
+                        
+                        # Hiển thị "Tải xong" sau khi đã add
+                        if pw and pw.winfo_exists():
+                            pv.set("✅ Successfully added to playlist!")
+                            # Đợi một chút để user thấy thông báo rồi đóng window
+                            def close_window(p=pw):
+                                try:
+                                    if p and p.winfo_exists():
+                                        if hasattr(p, '_closed'):
+                                            p._closed = True
+                                        p.destroy()
+                                except:
+                                    pass
+                            self.root.after(500, close_window)
+                    except Exception as e:
+                        print(f"Error in download callback: {e}")
+                        traceback.print_exc()
+                        # Đảm bảo progress window được đóng ngay cả khi có lỗi
+                        try:
+                            if pw and pw.winfo_exists():
+                                pw._closed = True
+                                pw.destroy()
+                        except:
+                            pass
+                
+                # Đảm bảo callback được gọi trên main thread
+                self.root.after(0, callback)
             except Exception as e:
-                self.root.after(0, lambda err=str(e), pw=progress_window: 
-                               self._on_youtube_error(err, pw))
+                print(f"Error in download thread: {e}")
+                traceback.print_exc()
+                # Đảm bảo progress window được đóng khi có lỗi
+                def error_callback(err=str(e), pw=progress_window, tid=timeout_id):
+                    try:
+                        # Hủy timeout
+                        try:
+                            self.root.after_cancel(tid)
+                        except:
+                            pass
+                        self._on_youtube_error(err, pw)
+                    except Exception as e2:
+                        print(f"Error in error callback: {e2}")
+                        # Force close progress window
+                        try:
+                            if pw and pw.winfo_exists():
+                                pw._closed = True
+                                pw.destroy()
+                        except:
+                            pass
+                
+                self.root.after(0, error_callback)
         
         threading.Thread(target=download_thread, daemon=True).start()
     
@@ -676,39 +827,83 @@ class MelodifyApp:
     
     def _on_youtube_downloaded(self, file_path: Optional[str], song: Optional[Song], url: str, progress_window):
         """Xử lý sau khi download YouTube video xong - chỉ update UI"""
-        try:
-            # Đóng progress window trước
-            if progress_window and progress_window.winfo_exists():
-                progress_window.destroy()
-        except:
-            pass
-        
-        if file_path and os.path.exists(file_path) and song:
+        # Kiểm tra file và song TRƯỚC
+        if not file_path or not os.path.exists(file_path):
+            # Đóng window và hiển thị lỗi
             try:
-                # Song đã được xử lý trong thread, chỉ cần thêm vào playlist
-                self.playlist.append(song)
-                # Refresh playlist view trong background để không block UI
-                self.root.after_idle(self._refresh_playlist_view)
-                self._update_status(f"✅ Added: {song.title}")
+                if progress_window and progress_window.winfo_exists():
+                    if hasattr(progress_window, '_closed'):
+                        progress_window._closed = True
+                    progress_window.destroy()
+            except:
+                pass
+            self._update_status("❌ Failed to download YouTube video: File not found")
+            return
+        
+        if not song:
+            # Thử tạo song từ file nếu chưa có
+            try:
+                song = Song.from_path(file_path)
+                song.youtube_url = url
             except Exception as e:
-                print(f"Error adding song: {e}")
-                self._update_status(f"❌ Error adding video: {str(e)}")
-        else:
-            self._update_status("❌ Failed to download YouTube video")
+                print(f"Error creating song from file: {e}")
+                # Đóng window và hiển thị lỗi
+                try:
+                    if progress_window and progress_window.winfo_exists():
+                        if hasattr(progress_window, '_closed'):
+                            progress_window._closed = True
+                        progress_window.destroy()
+                except:
+                    pass
+                self._update_status("❌ Failed to process downloaded video")
+                return
+        
+        try:
+            # Song đã được xử lý trong thread, thêm vào playlist NGAY
+            self.playlist.append(song)
+            # Refresh playlist view ngay để hiển thị bài hát mới - đảm bảo trên main thread
+            # Gọi trực tiếp vì đã ở main thread (từ root.after)
+            self._refresh_playlist_view()
+            # Force update UI ngay
+            self.root.update_idletasks()
+            self._update_status(f"✅ Added: {song.title}")
+        except Exception as e:
+            print(f"Error adding song: {e}")
+            traceback.print_exc()
+            self._update_status(f"❌ Error adding video: {str(e)}")
+            # Đóng window nếu có lỗi
+            try:
+                if progress_window and progress_window.winfo_exists():
+                    if hasattr(progress_window, '_closed'):
+                        progress_window._closed = True
+                    progress_window.destroy()
+            except:
+                pass
     
     def _on_youtube_error(self, error_msg: str, progress_window):
         """Xử lý lỗi download YouTube"""
+        # Đóng progress window TRƯỚC TIÊN
         try:
-            # Đóng progress window trước
-            if progress_window and progress_window.winfo_exists():
+            if progress_window:
+                if hasattr(progress_window, '_closed'):
+                    progress_window._closed = True
+                if progress_window.winfo_exists():
+                    progress_window.destroy()
+        except Exception as e:
+            print(f"Error closing progress window on error: {e}")
+            # Force destroy nếu cần
+            try:
+                if hasattr(progress_window, '_closed'):
+                    progress_window._closed = True
                 progress_window.destroy()
-        except:
-            pass
+            except:
+                pass
         
+        # Hiển thị lỗi
         try:
             messagebox.showerror("Download Error", f"Failed to download:\n{error_msg}")
-        except:
-            pass
+        except Exception as e:
+            print(f"Error showing error message: {e}")
         
         self._update_status("❌ YouTube download failed")
     
@@ -732,34 +927,79 @@ class MelodifyApp:
     def _refresh_playlist_view(self):
         """Cập nhật Treeview từ Linked List - optimized để không block UI"""
         try:
-            # Xóa cũ
+            # Xóa cũ - nhanh chóng
             for item in self.playlist_tree.get_children():
                 self.playlist_tree.delete(item)
             
-            # Thêm mới từ linked list - batch để tránh block UI
-            items_to_add = []
-            for i, song in enumerate(self.playlist):
-                # Thêm icon YouTube nếu có YouTube URL
-                title_display = song.title
-                if hasattr(song, 'youtube_url') and song.youtube_url:
-                    title_display = "📺 " + title_display
-                
-                items_to_add.append((title_display, song.artist, song == self.playlist.current_song))
+            # Chuẩn bị dữ liệu trong background thread để không block UI
+            def prepare_data():
+                items_to_add = []
+                for i, song in enumerate(self.playlist):
+                    # Thêm icon YouTube nếu có YouTube URL
+                    title_display = song.title
+                    if hasattr(song, 'youtube_url') and song.youtube_url:
+                        title_display = "📺 " + title_display
+                    
+                    items_to_add.append((title_display, song.artist, song == self.playlist.current_song))
+                return items_to_add
             
-            # Insert tất cả cùng lúc
-            for i, (title, artist, is_current) in enumerate(items_to_add):
-                item_id = self.playlist_tree.insert("", tk.END,
-                                                    values=(title, artist))
-                
-                # Highlight current song
-                if is_current:
-                    self.playlist_tree.selection_set(item_id)
-                    self.playlist_tree.see(item_id)
+            # Chuẩn bị dữ liệu
+            items_to_add = prepare_data()
             
-            # Update count
-            if hasattr(self, 'playlist_count'):
-                self.playlist_count.config(text=f"{len(self.playlist)} songs")
-            self._update_ll_info()
+            # Batch insert với delay nhỏ để không block UI
+            # Nhưng insert ngay batch đầu tiên để user thấy ngay
+            def batch_insert(start_idx=0, batch_size=50):
+                """Insert từng batch để không block UI"""
+                end_idx = min(start_idx + batch_size, len(items_to_add))
+                
+                for i in range(start_idx, end_idx):
+                    title, artist, is_current = items_to_add[i]
+                    item_id = self.playlist_tree.insert("", tk.END, values=(title, artist))
+                    
+                    # Highlight current song
+                    if is_current:
+                        self.playlist_tree.selection_set(item_id)
+                        self.playlist_tree.see(item_id)
+                
+                # Update count ngay sau batch đầu tiên
+                if start_idx == 0 and hasattr(self, 'playlist_count'):
+                    self.playlist_count.config(text=f"{len(self.playlist)} songs")
+                
+                # Nếu còn items, schedule batch tiếp theo
+                if end_idx < len(items_to_add):
+                    self.root.after(1, lambda: batch_insert(end_idx, batch_size))
+                else:
+                    # Hoàn thành, update count và info
+                    if hasattr(self, 'playlist_count'):
+                        self.playlist_count.config(text=f"{len(self.playlist)} songs")
+                    self._update_ll_info()
+            
+            # Bắt đầu batch insert - insert ngay batch đầu tiên
+            if items_to_add:
+                # Insert ngay batch đầu tiên (không delay) để user thấy ngay
+                first_batch_size = min(50, len(items_to_add))
+                for i in range(first_batch_size):
+                    title, artist, is_current = items_to_add[i]
+                    item_id = self.playlist_tree.insert("", tk.END, values=(title, artist))
+                    if is_current:
+                        self.playlist_tree.selection_set(item_id)
+                        self.playlist_tree.see(item_id)
+                
+                # Update count ngay
+                if hasattr(self, 'playlist_count'):
+                    self.playlist_count.config(text=f"{len(self.playlist)} songs")
+                
+                # Nếu còn items, schedule batch tiếp theo
+                if len(items_to_add) > first_batch_size:
+                    self.root.after(1, lambda: batch_insert(first_batch_size, 50))
+                else:
+                    # Hoàn thành
+                    self._update_ll_info()
+            else:
+                # Playlist rỗng
+                if hasattr(self, 'playlist_count'):
+                    self.playlist_count.config(text="0 songs")
+                self._update_ll_info()
         except Exception as e:
             print(f"Error refreshing playlist view: {e}")
     
@@ -916,16 +1156,17 @@ class MelodifyApp:
     
     def _on_seek(self, value):
         """Seek trong bài hát - reload và play từ vị trí mới"""
-        if not hasattr(self.engine, 'duration') or not self.engine.duration or self.engine.duration <= 0:
-            return
-        
-        # value từ slider là giây (vì max_val = duration)
-        position_seconds = max(0, min(value, self.engine.duration))
-        
-        # Nếu đang phát hoặc đã load, cần reload để seek chính xác
         song = self.playlist.current_song
         if not song:
             return
+        
+        # Lấy duration chính xác - ưu tiên từ song object
+        final_duration = song.duration if song.duration > 0 else self.engine.duration
+        if final_duration <= 0:
+            return
+        
+        # value từ slider là giây (vì max_val = duration)
+        position_seconds = max(0, min(value, final_duration))
         
         was_playing = self.engine.is_playing and not self.engine.is_paused
         
@@ -936,29 +1177,43 @@ class MelodifyApp:
         
         # Load lại file
         if self.engine.load(song.path):
-            # Seek video trước (nếu có)
+            # Xử lý video (nếu có) - seek trước khi play
             if self.video_player and self.engine._has_video and self.engine._video_path:
-                self.video_player.open(self.engine._video_path)
+                # Mở video nếu chưa mở hoặc đã bị đóng
+                if not self.video_player.video_cap or not self.video_player.video_cap.isOpened():
+                    self.video_player.open(self.engine._video_path)
+                # Seek video đến vị trí mới
                 self.video_player.seek(position_seconds)
             
-            # Play từ vị trí mới
+            # Play từ vị trí mới - play() sẽ set tracking variables đúng
             if was_playing:
-                # Thử play từ vị trí cụ thể
+                # Play audio từ vị trí cụ thể - play() sẽ set _play_start_time và _play_start_pos
                 self.engine.play(start_pos=position_seconds)
+                # Đảm bảo tracking variables được set đúng sau play()
+                import time
+                if not hasattr(self.engine, '_play_start_time') or self.engine._play_start_time is None:
+                    self.engine._play_start_time = time.time()
+                    self.engine._play_start_pos = position_seconds
+                
+                # Play video nếu có
                 if self.video_player and self.engine._has_video:
-                    self.video_player.play()
+                    if not self.video_player.is_playing:
+                        self.video_player.play()
             else:
-                # Chỉ set position, không play
+                # Chỉ set position, không play - vẫn cần set tracking để khi play sau sẽ đúng
+                import time
                 self.engine.current_pos = position_seconds
+                self.engine._play_start_time = None  # Chưa play nên không set time
+                self.engine._play_start_pos = position_seconds
+                
+                # Video đã được seek ở trên, chỉ cần pause nếu đang playing
                 if self.video_player and self.engine._has_video:
-                    self.video_player.seek(position_seconds)
-                    self.video_player.pause()
+                    if self.video_player.is_playing:
+                        self.video_player.pause()
             
-            # Cập nhật UI - đảm bảo slider không bị reset
+            # Cập nhật UI ngay - đảm bảo không bị reset
             self.progress_slider.value = position_seconds
             self.time_current.config(text=self._format_time(position_seconds))
-            # Cập nhật current_pos trong engine để get_pos() trả về đúng
-            self.engine.current_pos = position_seconds
     
     def _on_volume_change(self, value):
         """Thay đổi volume"""
@@ -967,53 +1222,61 @@ class MelodifyApp:
     # ==================== UPDATE LOOP ====================
     
     def _start_update_loop(self):
-        """Bắt đầu thread cập nhật UI"""
-        def update():
-            vinyl_rotation = 0
-            while self.running:
-                try:
-                    # Update progress khi đang playing (không pause)
-                    if self.engine.is_playing and not self.engine.is_paused:
-                        # Với video, cần sync với video player
-                        if self.engine._has_video and self.video_player and self.video_player.is_playing:
-                            # Lấy position từ audio engine
-                            pos = self.engine.get_pos()
-                            # Sync video với audio
-                            self.video_player.sync_with_audio(pos)
-                        elif self.engine.is_active():
-                            # Chỉ audio, lấy position từ engine
-                            pos = self.engine.get_pos()
-                        else:
-                            # Engine không active nhưng đang playing (có thể đang load)
-                            pos = self.engine.current_pos
-                        
-                        # Cập nhật slider (đảm bảo max_val đã được set)
-                        if self.progress_slider.max_val > 0:
-                            self.progress_slider.value = min(pos, self.progress_slider.max_val)
-                        self.time_current.config(text=self._format_time(pos))
-                        
-                        # Rotate vinyl chỉ khi không có video
-                        if not self.engine._has_video:
-                            vinyl_rotation = (vinyl_rotation + 2) % 360
-                            self._draw_vinyl(vinyl_rotation)
-                    
-                    # Check if song ended - CHỈ khi đang playing và KHÔNG pause
-                    # Với video, cần check cả video player
-                    if self.engine.is_playing and not self.engine.is_paused:
-                        if self.engine._has_video and self.video_player:
-                            # Với video, check cả video player và audio engine
-                            if not self.video_player.is_playing and not self.engine.is_active():
-                                self.root.after(0, self._on_song_end)
-                        elif not self.engine.is_active():
-                            # Chỉ audio, check engine
-                            self.root.after(0, self._on_song_end)
-                    
-                    time.sleep(0.05)
-                except:
-                    break
+        """Bắt đầu update loop trên main thread (dùng root.after)"""
+        self._vinyl_rotation = 0
+        self._update_ui_loop()
+    
+    def _update_ui_loop(self):
+        """Update loop chạy trên main thread"""
+        if not self.running:
+            return
         
-        self.update_thread = threading.Thread(target=update, daemon=True)
-        self.update_thread.start()
+        try:
+            # Update progress khi đang playing (không pause)
+            if self.engine.is_playing and not self.engine.is_paused:
+                # Lấy position từ engine (đã track thủ công sau seek)
+                pos = self.engine.get_pos()
+                
+                # Đảm bảo position hợp lệ
+                if pos < 0:
+                    pos = 0
+                
+                # Với video, cần sync với video player
+                if self.engine._has_video and self.video_player and self.video_player.is_playing:
+                    # Sync video với audio position
+                    self.video_player.sync_with_audio(pos)
+                
+                # Cập nhật UI trực tiếp (đã ở main thread)
+                try:
+                    # Cập nhật slider (đảm bảo max_val đã được set)
+                    if self.progress_slider.max_val > 0:
+                        slider_value = min(pos, self.progress_slider.max_val)
+                        self.progress_slider.value = slider_value
+                    # Luôn update timer
+                    self.time_current.config(text=self._format_time(pos))
+                except Exception as e:
+                    print(f"Error updating UI: {e}")
+                
+                # Rotate vinyl chỉ khi không có video
+                if not self.engine._has_video:
+                    self._vinyl_rotation = (self._vinyl_rotation + 2) % 360
+                    self._draw_vinyl(self._vinyl_rotation)
+            
+            # Check if song ended - CHỈ khi đang playing và KHÔNG pause
+            # Với video, cần check cả video player
+            if self.engine.is_playing and not self.engine.is_paused:
+                if self.engine._has_video and self.video_player:
+                    # Với video, check cả video player và audio engine
+                    if not self.video_player.is_playing and not self.engine.is_active():
+                        self._on_song_end()
+                elif not self.engine.is_active():
+                    # Chỉ audio, check engine
+                    self._on_song_end()
+        except Exception as e:
+            print(f"Error in update loop: {e}")
+        
+        # Schedule next update (50ms = ~20 FPS)
+        self.root.after(50, self._update_ui_loop)
     
     def _on_song_end(self):
         """Xử lý khi bài hát kết thúc"""
@@ -1322,7 +1585,8 @@ class MelodifyApp:
         needs_convert = ext in MusicEngine.CONVERT_FORMATS
         
         if self.engine.load(song.path):
-            self.engine.play()
+            # Play từ đầu (start_pos=0.0)
+            self.engine.play(start_pos=0.0)
             
             # Mở video player nếu có video
             if self.engine._has_video and self.video_player and self.engine._video_path:
@@ -1335,17 +1599,24 @@ class MelodifyApp:
             self.stats["total_played"] = self.stats.get("total_played", 0) + 1
             self.stats["last_played"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             
-            # Update UI
-            self.song_title.config(text=song.title)
-            self.song_artist.config(text=song.artist)
+            # Update UI với fade animation
+            self._fade_update_song_info(song.title, song.artist)
             self.play_btn.icon = "⏸️"
             self.play_btn._draw()
             
-            # Update progress
-            self.progress_slider.max_val = self.engine.duration if self.engine.duration > 0 else 100
+            # Update progress - ưu tiên duration từ song object (từ YouTube), nếu không có thì dùng engine duration
+            final_duration = song.duration if song.duration > 0 else self.engine.duration
+            if final_duration <= 0:
+                final_duration = 100  # Fallback
+            
+            self.progress_slider.max_val = final_duration
             self.progress_slider.value = 0  # Reset về đầu
-            self.time_total.config(text=self._format_time(self.engine.duration))
+            self.time_total.config(text=self._format_time(final_duration))
             self.time_current.config(text="0:00")  # Reset thời gian hiện tại
+            
+            # Cập nhật engine duration nếu song có duration chính xác hơn
+            if song.duration > 0 and abs(song.duration - self.engine.duration) > 1:
+                self.engine.duration = song.duration
             
             self._refresh_playlist_view()
             
@@ -1827,6 +2098,48 @@ class MelodifyApp:
             self._update_ll_info()
         else:
             self._update_status(f"❌ Failed to delete at position {position}")
+    
+    def _fade_update_song_info(self, title, artist):
+        """Update song info với fade animation"""
+        def fade_out(step=0):
+            if step < 10:
+                alpha = 1.0 - (step / 10.0)
+                # Fade out
+                self._update_label_alpha(self.song_title, alpha)
+                self._update_label_alpha(self.song_artist, alpha)
+                self.root.after(20, lambda: fade_out(step + 1))
+            else:
+                # Update text
+                self.song_title.config(text=title)
+                self.song_artist.config(text=artist)
+                # Fade in
+                fade_in(0)
+        
+        def fade_in(step=0):
+            if step < 10:
+                alpha = step / 10.0
+                self._update_label_alpha(self.song_title, alpha)
+                self._update_label_alpha(self.song_artist, alpha)
+                self.root.after(20, lambda: fade_in(step + 1))
+        
+        fade_out(0)
+    
+    def _update_label_alpha(self, label, alpha):
+        """Update label với alpha effect (simulated)"""
+        # Tkinter không hỗ trợ alpha trực tiếp, dùng workaround với color
+        if hasattr(label, 'cget'):
+            current_fg = label.cget('fg')
+            if current_fg.startswith('#'):
+                # Blend với background
+                r = int(current_fg[1:3], 16)
+                g = int(current_fg[3:5], 16)
+                b = int(current_fg[5:7], 16)
+                bg_r, bg_g, bg_b = 18, 18, 26  # BG_CARD
+                new_r = int(r * alpha + bg_r * (1 - alpha))
+                new_g = int(g * alpha + bg_g * (1 - alpha))
+                new_b = int(b * alpha + bg_b * (1 - alpha))
+                new_color = f"#{new_r:02x}{new_g:02x}{new_b:02x}"
+                label.config(fg=new_color)
     
     def run(self):
         """Chạy ứng dụng"""
