@@ -43,15 +43,17 @@ def is_youtube_url(url: str) -> bool:
     return any(pattern in url.lower() for pattern in youtube_patterns)
 
 
-def download_youtube(url: str, output_dir: str, progress_callback=None) -> Optional[str]:
-    """Download YouTube video/audio và trả về đường dẫn file"""
+def download_youtube(url: str, output_dir: str, progress_callback=None) -> tuple[Optional[str], Optional[dict]]:
+    """Download YouTube video/audio và trả về (file_path, info_dict)
+    info_dict chứa: title, artist, duration, uploader, channel, etc.
+    """
     if not YT_DLP_AVAILABLE:
-        return None
+        return None, None
     
     try:
         video_id = parse_youtube_url(url)
         if not video_id:
-            return None
+            return None, None
         
         # Cấu hình yt-dlp - tối ưu để tránh SABR streaming warnings
         ydl_opts = {
@@ -74,10 +76,8 @@ def download_youtube(url: str, output_dir: str, progress_callback=None) -> Optio
             ydl_opts['progress_hooks'] = [progress_callback]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Lấy thông tin video
+            # Lấy thông tin video TRƯỚC khi download
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Unknown')
-            duration = info.get('duration', 0)
             
             # Download
             ydl.download([url])
@@ -90,12 +90,64 @@ def download_youtube(url: str, output_dir: str, progress_callback=None) -> Optio
                 # Lấy file mới nhất
                 video_files.sort(key=lambda x: os.path.getmtime(os.path.join(output_dir, x)), reverse=True)
                 file_path = os.path.join(output_dir, video_files[0])
-                return file_path
+                
+                # Trả về cả file_path và info
+                return file_path, info
         
-        return None
+        return None, None
     except Exception as e:
         print(f"Error downloading YouTube: {e}")
-        return None
+        return None, None
+
+
+def parse_youtube_title(title: str) -> tuple[str, str]:
+    """Parse YouTube title để tách artist và song title
+    Ví dụ: "ILLIT (아일릿) 'NOT CUTE ANYMORE' Official MV" -> ("ILLIT", "NOT CUTE ANYMORE")
+    """
+    if not title:
+        return "Unknown Artist", "Unknown Title"
+    
+    # Loại bỏ các từ khóa phổ biến ở cuối
+    title_clean = title
+    suffixes = [' Official MV', ' Official Music Video', ' Official Audio', ' Official', ' MV', ' Music Video', ' Audio']
+    for suffix in suffixes:
+        if title_clean.endswith(suffix):
+            title_clean = title_clean[:-len(suffix)].strip()
+    
+    # Pattern 1: "Artist - Title" hoặc "Artist: Title"
+    for separator in [' - ', ': ', ' – ', ' — ']:
+        if separator in title_clean:
+            parts = title_clean.split(separator, 1)
+            if len(parts) == 2:
+                artist = parts[0].strip()
+                song_title = parts[1].strip()
+                # Loại bỏ dấu ngoặc đơn/quotes nếu có
+                song_title = song_title.strip("'\"")
+                return artist, song_title
+    
+    # Pattern 2: "Artist 'Title'" hoặc "Artist "Title""
+    for quote in ["'", '"', '"', '"']:
+        if quote in title_clean:
+            parts = title_clean.split(quote, 1)
+            if len(parts) == 2:
+                artist = parts[0].strip()
+                song_title = parts[1].strip()
+                # Loại bỏ phần còn lại sau quote thứ 2
+                if quote in song_title:
+                    song_title = song_title.split(quote)[0]
+                return artist, song_title
+    
+    # Pattern 3: "Artist (Title)" - tên trong ngoặc đơn
+    if '(' in title_clean and ')' in title_clean:
+        import re
+        match = re.match(r'^(.+?)\s*\(([^)]+)\)', title_clean)
+        if match:
+            artist = match.group(1).strip()
+            song_title = match.group(2).strip()
+            return artist, song_title
+    
+    # Nếu không parse được, dùng toàn bộ làm title
+    return "Unknown Artist", title_clean
 
 
 def get_youtube_info(url: str) -> Optional[dict]:
@@ -115,10 +167,24 @@ def get_youtube_info(url: str) -> Optional[dict]:
         }
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Unknown')
+            
+            # Parse title để tách artist và song title
+            artist, song_title = parse_youtube_title(title)
+            
+            # Ưu tiên channel name nếu có (thường là artist cho MV)
+            uploader = info.get('uploader', '')
+            channel = info.get('channel', '')
+            
+            # Nếu parse được artist từ title, dùng nó; nếu không, dùng channel/uploader
+            if artist == "Unknown Artist" and (channel or uploader):
+                artist = channel or uploader
+            
             return {
-                'title': info.get('title', 'Unknown'),
-                'artist': info.get('uploader', 'YouTube'),
+                'title': song_title if song_title != "Unknown Title" else title,
+                'artist': artist,
                 'duration': info.get('duration', 0),
+                'full_title': title,  # Giữ nguyên title gốc
             }
     except:
         return None

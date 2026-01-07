@@ -645,78 +645,134 @@ class MelodifyApp:
                 self.root.after(0, lambda: progress_var.set("✅ Download completed! Processing..."))
         
         def download_thread():
+            file_path = None
+            song = None
+            youtube_info = None
             try:
-                file_path = download_youtube(url, self.engine._youtube_dir, update_progress)
+                # download_youtube giờ trả về cả file_path và info
+                file_path, youtube_info = download_youtube(url, self.engine._youtube_dir, update_progress)
+                print(f"DEBUG: download_youtube returned: file_path={file_path is not None}, info={youtube_info is not None}")
                 
                 # Cập nhật progress window để hiển thị "Tải xong"
                 self.root.after(0, lambda: progress_var.set("✅ Download completed! Adding to playlist..."))
                 
                 # Xử lý metadata trong thread để không block UI
-                song = None
                 if file_path and os.path.exists(file_path):
                     try:
-                        # Tạo Song từ file đã download (nhanh, chỉ đọc metadata cơ bản)
-                        song = Song.from_path(file_path)
-                        song.youtube_url = url  # Lưu YouTube URL ngay
-                        
-                        # Lấy thông tin từ YouTube URL (có thể chậm, nhưng trong background thread)
-                        # Nếu get_youtube_info chậm, vẫn có metadata từ file
-                        try:
-                            info = get_youtube_info(url)
-                            if info:
-                                song.title = info.get('title', song.title)
-                                song.artist = info.get('artist', 'YouTube')
-                                song.duration = info.get('duration', 0)
-                        except Exception as e:
-                            # Nếu không lấy được info từ YouTube, dùng metadata từ file
-                            print(f"Warning: Could not get YouTube info: {e}")
+                        # Nếu có YouTube info, dùng nó để tạo song với metadata chính xác
+                        if youtube_info:
+                            # Parse title từ YouTube info
+                            from youtube_handler import parse_youtube_title
+                            full_title = youtube_info.get('title', 'Unknown')
+                            artist, song_title = parse_youtube_title(full_title)
+                            
+                            # Ưu tiên channel/uploader nếu parse không được artist
+                            if artist == "Unknown Artist":
+                                artist = youtube_info.get('channel') or youtube_info.get('uploader') or 'YouTube'
+                            
+                            # Tạo song với metadata từ YouTube
+                            song = Song(
+                                title=song_title if song_title != "Unknown Title" else full_title,
+                                artist=artist,
+                                path=file_path,
+                                duration=youtube_info.get('duration', 0),
+                                youtube_url=url
+                            )
+                            print(f"DEBUG: Created song from YouTube info: {song.title} - {song.artist}")
+                        else:
+                            # Fallback: tạo song từ file nếu không có YouTube info
+                            song = Song.from_path(file_path)
+                            song.youtube_url = url
+                            print(f"DEBUG: Created song from file (fallback): {song.title}")
                     except Exception as e:
                         print(f"Error processing metadata: {e}")
-                
-                # Chỉ update UI trên main thread - đảm bảo callback luôn được gọi
-                # Sử dụng default parameters để tránh closure issues
-                def callback(f=file_path, s=song, u=url, pw=progress_window, tid=timeout_id, pv=progress_var):
-                    try:
-                        # Hủy timeout vì đã hoàn thành
-                        try:
-                            self.root.after_cancel(tid)
-                        except:
-                            pass
-                        
-                        # Add vào playlist NGAY, không delay
-                        self._on_youtube_downloaded(f, s, u, pw)
-                        
-                        # Hiển thị "Tải xong" sau khi đã add
-                        if pw and pw.winfo_exists():
-                            pv.set("✅ Successfully added to playlist!")
-                            # Đợi một chút để user thấy thông báo rồi đóng window
-                            def close_window(p=pw):
-                                try:
-                                    if p and p.winfo_exists():
-                                        if hasattr(p, '_closed'):
-                                            p._closed = True
-                                        p.destroy()
-                                except:
-                                    pass
-                            self.root.after(500, close_window)
-                    except Exception as e:
-                        print(f"Error in download callback: {e}")
                         traceback.print_exc()
-                        # Đảm bảo progress window được đóng ngay cả khi có lỗi
+                        # Fallback: tạo song từ file nếu có lỗi
                         try:
-                            if pw and pw.winfo_exists():
-                                pw._closed = True
-                                pw.destroy()
+                            song = Song.from_path(file_path)
+                            song.youtube_url = url
                         except:
                             pass
+                else:
+                    print(f"DEBUG: File path is None or doesn't exist: {file_path}")
                 
-                # Đảm bảo callback được gọi trên main thread
-                self.root.after(0, callback)
             except Exception as e:
                 print(f"Error in download thread: {e}")
                 traceback.print_exc()
-                # Đảm bảo progress window được đóng khi có lỗi
-                def error_callback(err=str(e), pw=progress_window, tid=timeout_id):
+            
+            # LUÔN gọi callback, kể cả khi có lỗi - capture variables
+            captured_file_path = file_path
+            captured_song = song
+            captured_url = url
+            captured_progress_window = progress_window
+            captured_timeout_id = timeout_id
+            captured_progress_var = progress_var
+            
+            # Debug: in thông tin để kiểm tra
+            print(f"DEBUG: Download thread completed. File: {captured_file_path}, Song: {captured_song is not None}")
+            
+            def callback():
+                try:
+                    print("DEBUG: Callback called")
+                    # Hủy timeout vì đã hoàn thành
+                    try:
+                        self.root.after_cancel(captured_timeout_id)
+                    except:
+                        pass
+                    
+                    # Add vào playlist NGAY, không delay
+                    print(f"DEBUG: Calling _on_youtube_downloaded with file={captured_file_path}, song={captured_song is not None}")
+                    self._on_youtube_downloaded(captured_file_path, captured_song, captured_url, captured_progress_window)
+                    print("DEBUG: _on_youtube_downloaded completed")
+                    
+                    # Hiển thị "Tải xong" sau khi đã add
+                    if captured_progress_window and captured_progress_window.winfo_exists():
+                        captured_progress_var.set("✅ Successfully added to playlist!")
+                        # Đợi một chút để user thấy thông báo rồi đóng window
+                        def close_window():
+                            try:
+                                if captured_progress_window and captured_progress_window.winfo_exists():
+                                    if hasattr(captured_progress_window, '_closed'):
+                                        captured_progress_window._closed = True
+                                    captured_progress_window.destroy()
+                            except:
+                                pass
+                        self.root.after(500, close_window)
+                except Exception as e:
+                    print(f"Error in download callback: {e}")
+                    traceback.print_exc()
+                    # Đảm bảo progress window được đóng ngay cả khi có lỗi
+                    try:
+                        if captured_progress_window and captured_progress_window.winfo_exists():
+                            captured_progress_window._closed = True
+                            captured_progress_window.destroy()
+                    except:
+                        pass
+            
+            # Đảm bảo callback được gọi trên main thread - LUÔN gọi
+            print(f"DEBUG: Scheduling callback - file_path={file_path is not None}, song={song is not None}")
+            if file_path is None:
+                print("DEBUG: WARNING - file_path is None!")
+            if song is None:
+                print("DEBUG: WARNING - song is None!")
+            
+            # Force schedule callback ngay - đảm bảo không bị block
+            try:
+                self.root.after(0, callback)
+                print("DEBUG: Callback scheduled successfully")
+            except Exception as e:
+                print(f"DEBUG: Error scheduling callback: {e}")
+                traceback.print_exc()
+                # Fallback: gọi trực tiếp nếu after() không hoạt động
+                try:
+                    callback()
+                except Exception as e2:
+                    print(f"DEBUG: Error calling callback directly: {e2}")
+                    traceback.print_exc()
+            
+            # Xử lý lỗi nếu có
+            if file_path is None:
+                def error_callback(err="Download failed", pw=progress_window, tid=timeout_id):
                     try:
                         # Hủy timeout
                         try:
@@ -791,17 +847,27 @@ class MelodifyApp:
                                       progress_var.set(f"Downloading video {idx}/{total}..."))
                         
                         try:
-                            file_path = download_youtube(video_url, self.engine._youtube_dir)
+                            file_path, youtube_info = download_youtube(video_url, self.engine._youtube_dir)
                             if file_path and os.path.exists(file_path):
                                 # Xử lý metadata trong thread
                                 try:
-                                    song = Song.from_path(file_path)
-                                    # Lấy thông tin từ YouTube
-                                    info = get_youtube_info(video_url)
-                                    if info:
-                                        song.title = info.get('title', song.title)
-                                        song.artist = info.get('artist', 'YouTube')
-                                        song.duration = info.get('duration', 0)
+                                    # Nếu có YouTube info, dùng nó
+                                    if youtube_info:
+                                        from youtube_handler import parse_youtube_title
+                                        full_title = youtube_info.get('title', 'Unknown')
+                                        artist, song_title = parse_youtube_title(full_title)
+                                        if artist == "Unknown Artist":
+                                            artist = youtube_info.get('channel') or youtube_info.get('uploader') or 'YouTube'
+                                        song = Song(
+                                            title=song_title if song_title != "Unknown Title" else full_title,
+                                            artist=artist,
+                                            path=file_path,
+                                            duration=youtube_info.get('duration', 0),
+                                            youtube_url=video_url
+                                        )
+                                    else:
+                                        # Fallback: tạo từ file
+                                        song = Song.from_path(file_path)
                                         song.youtube_url = video_url
                                     songs_to_add.append(song)
                                     downloaded += 1
@@ -827,8 +893,11 @@ class MelodifyApp:
     
     def _on_youtube_downloaded(self, file_path: Optional[str], song: Optional[Song], url: str, progress_window):
         """Xử lý sau khi download YouTube video xong - chỉ update UI"""
+        print(f"DEBUG _on_youtube_downloaded: file_path={file_path}, song={song is not None}")
+        
         # Kiểm tra file và song TRƯỚC
         if not file_path or not os.path.exists(file_path):
+            print(f"DEBUG: File not found: {file_path}")
             # Đóng window và hiển thị lỗi
             try:
                 if progress_window and progress_window.winfo_exists():
@@ -841,12 +910,15 @@ class MelodifyApp:
             return
         
         if not song:
+            print("DEBUG: Song is None, creating from file")
             # Thử tạo song từ file nếu chưa có
             try:
                 song = Song.from_path(file_path)
                 song.youtube_url = url
+                print(f"DEBUG: Created song: {song.title}")
             except Exception as e:
                 print(f"Error creating song from file: {e}")
+                traceback.print_exc()
                 # Đóng window và hiển thị lỗi
                 try:
                     if progress_window and progress_window.winfo_exists():
@@ -859,14 +931,23 @@ class MelodifyApp:
                 return
         
         try:
+            print(f"DEBUG: Adding song to playlist: {song.title}, current playlist size: {len(self.playlist)}")
             # Song đã được xử lý trong thread, thêm vào playlist NGAY
             self.playlist.append(song)
+            print(f"DEBUG: Song added, new playlist size: {len(self.playlist)}")
+            
             # Refresh playlist view ngay để hiển thị bài hát mới - đảm bảo trên main thread
             # Gọi trực tiếp vì đã ở main thread (từ root.after)
+            print("DEBUG: Refreshing playlist view")
             self._refresh_playlist_view()
-            # Force update UI ngay
+            print("DEBUG: Playlist view refreshed")
+            
+            # Force update UI ngay để đảm bảo playlist được refresh
             self.root.update_idletasks()
+            self.root.update()
+            
             self._update_status(f"✅ Added: {song.title}")
+            print(f"DEBUG: Status updated: Added {song.title}")
         except Exception as e:
             print(f"Error adding song: {e}")
             traceback.print_exc()
