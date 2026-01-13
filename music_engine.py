@@ -1,6 +1,4 @@
-# ============================================
-# MUSIC ENGINE - Audio/Video Playback
-# ============================================
+
 
 import os
 import threading
@@ -15,11 +13,8 @@ except ImportError:
     PYGAME_AVAILABLE = False
     print("⚠️ pygame not installed. Run: pip install pygame")
 
-# Video support - Set environment trước khi import để tránh FFmpeg threading issues
 import sys
 
-# Suppress FFmpeg assertion errors - chúng không ảnh hưởng đến functionality
-# Redirect stderr để bỏ qua assertion warnings
 class SuppressFFmpegAssertion:
     def __init__(self):
         self.original_stderr = sys.stderr
@@ -55,7 +50,7 @@ finally:
     # Restore stderr
     sys.stderr = _ffmpeg_suppressor.original_stderr
 
-# FFmpeg và pydub
+# FFmpeg và pydub availability
 FFMPEG_AVAILABLE = False
 PYDUB_AVAILABLE = False
 
@@ -64,7 +59,6 @@ def find_ffmpeg():
     import subprocess
     import glob
     
-    # Kiểm tra FFmpeg đã có trong PATH chưa
     try:
         result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True,
                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -73,7 +67,6 @@ def find_ffmpeg():
     except FileNotFoundError:
         pass
     
-    # Tìm FFmpeg trong các đường dẫn phổ biến (Windows)
     if os.name == 'nt':
         search_paths = [
             os.path.expanduser(r"~\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg*\ffmpeg-*\bin"),
@@ -95,12 +88,11 @@ def find_ffmpeg():
     
     return False
 
-# Tìm FFmpeg trước
 if find_ffmpeg():
     FFMPEG_AVAILABLE = True
-    print("✅ FFmpeg detected - MP4 support enabled")
+    print(" FFmpeg detected - MP4 support enabled")
 else:
-    print("⚠️ FFmpeg not found. Install: winget install ffmpeg")
+    print(" FFmpeg not found. Install: winget install ffmpeg")
 
 # Kiểm tra pydub
 try:
@@ -222,10 +214,10 @@ class MusicEngine:
                 
                 # Kiểm tra file đã tồn tại chưa
                 if os.path.exists(temp_path):
-                    print(f"✅ Using cached: {filename}")
+                    print(f" Using cached: {filename}")
                     return temp_path
                 
-                print(f"🔄 Converting {filename}...")
+                print(f"Converting {filename}...")
                 
                 # Convert - đảm bảo thread-safe
                 ext = os.path.splitext(path)[1].lower()
@@ -236,8 +228,6 @@ class MusicEngine:
                 else:
                     audio = AudioSegment.from_file(path)
                 
-                # Export với thread-safe settings để tránh async_lock assertion
-                # Sử dụng subprocess trực tiếp thay vì qua pydub để kiểm soát tốt hơn
                 try:
                     import subprocess
                     import shutil
@@ -271,14 +261,14 @@ class MusicEngine:
                     
                     if result.returncode == 0 and os.path.exists(temp_path):
                         self._temp_file = temp_path
-                        print(f"✅ Converted successfully!")
+                        print(f" Converted successfully!")
                         return temp_path
                     else:
                         raise Exception(f"FFmpeg error: {result.stderr.decode('utf-8', errors='ignore')}")
                         
                 except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
                     # Fallback về pydub nếu subprocess thất bại
-                    print(f"⚠️ Subprocess failed, using pydub: {e}")
+                    print(f" Subprocess failed, using pydub: {e}")
                     export_params = [
                         "-threads", "1",           # Single thread
                         "-thread_type", "none",    # Disable threading
@@ -286,10 +276,10 @@ class MusicEngine:
                     audio.export(temp_path, format="wav", parameters=export_params)
                 self._temp_file = temp_path
                 
-                print(f"✅ Converted successfully!")
+                print(f" Converted successfully!")
                 return temp_path
         except Exception as e:
-            print(f"❌ Convert error: {e}")
+            print(f" Convert error: {e}")
             # Thử cleanup nếu có lỗi
             try:
                 if os.path.exists(temp_path):
@@ -404,7 +394,6 @@ class MusicEngine:
             try:
                 pygame.mixer.music.set_pos(position)
             except:
-                # Không hỗ trợ seek, cần reload (sẽ được xử lý ở music_player.py)
                 pass
     
     def play_from_pos(self, position: float) -> None:

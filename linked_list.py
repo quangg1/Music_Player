@@ -1,11 +1,3 @@
-# ============================================
-# DOUBLY LINKED LIST - OPTIMIZED FOR MUSIC PLAYER
-# ============================================
-# Sử dụng Doubly Linked List để quản lý playlist
-# - O(1) cho next/previous
-# - O(1) cho insert/delete tại vị trí đã biết
-# - Hỗ trợ circular mode cho chế độ repeat
-# ============================================
 
 from dataclasses import dataclass, asdict
 from typing import Optional, Any, Iterator
@@ -67,7 +59,6 @@ class PlaylistLinkedList:
         self._circular: bool = False  # Chế độ lặp playlist
     
     # ==================== PROPERTIES ====================
-    
     @property
     def size(self) -> int:
         return self._size
@@ -100,8 +91,7 @@ class PlaylistLinkedList:
     def circular(self, value: bool):
         self._circular = value
     
-    # ==================== CORE OPERATIONS ====================
-    
+    # ==================== MODIFICATION ====================    
     def append(self, song: Song) -> None:
         """Thêm bài hát vào cuối playlist - O(1)"""
         new_node = Node(song)

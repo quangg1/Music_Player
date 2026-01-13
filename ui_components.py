@@ -1,6 +1,3 @@
-# ============================================
-# UI COMPONENTS - Custom Widgets với Animation
-# ============================================
 
 import tkinter as tk
 import math

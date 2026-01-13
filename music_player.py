@@ -1,10 +1,3 @@
-# ============================================
-# 🎵 MELODIFY - MUSIC PLAYER WITH LINKED LIST
-# ============================================
-# Ứng dụng nghe nhạc sử dụng Doubly Linked List
-# Developed for DSA Project
-# ============================================
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
@@ -29,13 +22,12 @@ from youtube_handler import (
 from linked_list import PlaylistLinkedList, Song
 
 
-# ==================== MAIN APPLICATION ====================
 class MelodifyApp:
     """Ứng dụng nghe nhạc chính"""
     
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("🎵 Melodify - Music Player")
+        self.root.title("Melodify - Music Player")
         self.root.geometry("1100x820")
         self.root.configure(bg=Theme.BG_DARK)
         self.root.minsize(1000, 720)
@@ -53,7 +45,7 @@ class MelodifyApp:
         self.video_player = None  # Sẽ khởi tạo sau khi tạo UI
         
         # State
-        self.repeat_mode = 0  # 0: off, 1: all, 2: one
+        self.repeat_mode = 0  # 0: No Repeat, 1: Repeat All, 2: Repeat One
         self.shuffle_mode = False
         self._vinyl_rotation = 0
         self.running = True
@@ -64,6 +56,7 @@ class MelodifyApp:
             "total_time": 0.0,
             "last_played": None
         }
+        self.stats["song_play_count"] = {}
         
         # File paths
         self.data_dir = os.path.join(os.path.dirname(__file__), '.melodify_data')
@@ -137,20 +130,20 @@ class MelodifyApp:
         # Playlist menu
         pl_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Playlist", menu=pl_menu)
-        pl_menu.add_command(label="🔍 Search...", command=self.search_song, accelerator="Ctrl+F")
-        pl_menu.add_command(label="❤️ Favorites", command=self.show_favorites)
+        pl_menu.add_command(label=" Search...", command=self.search_song, accelerator="Ctrl+F")
+        pl_menu.add_command(label="Favorites", command=self.show_favorites)
         pl_menu.add_separator()
-        pl_menu.add_command(label="📊 Statistics", command=self.show_stats)
+        pl_menu.add_command(label="Statistics", command=self.show_stats)
         
-        # Linked List menu - THỂ HIỆN CỐT LÕI ĐỀ BÀI
+        # Linked List menu 
         ll_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="🔗 Linked List", menu=ll_menu)
-        ll_menu.add_command(label="📊 Visualization", command=self.show_linked_list_visualization, accelerator="Ctrl+L")
-        ll_menu.add_command(label="⚙️ Operations", command=self.show_linked_list_operations)
-        ll_menu.add_command(label="ℹ️ Info", command=self.show_linked_list_info)
+        menubar.add_cascade(label="Linked List", menu=ll_menu)
+        ll_menu.add_command(label="Visualization", command=self.show_linked_list_visualization, accelerator="Ctrl+L")
+        ll_menu.add_command(label=" Operations", command=self.show_linked_list_operations)
+        ll_menu.add_command(label=" Info", command=self.show_linked_list_info)
         ll_menu.add_separator()
-        ll_menu.add_command(label="➕ Insert at Position", command=self.insert_song_at_position)
-        ll_menu.add_command(label="➖ Delete at Position", command=self.delete_song_at_position)
+        ll_menu.add_command(label=" Insert at Position", command=self.insert_song_at_position)
+        ll_menu.add_command(label=" Delete at Position", command=self.delete_song_at_position)
         
         # Bind shortcut
         self.root.bind("<Control-l>", lambda e: self.show_linked_list_visualization())
@@ -195,7 +188,6 @@ class MelodifyApp:
     def _create_ui(self):
         """Xây dựng giao diện"""
         
-        # ===== HEADER =====
         header = tk.Frame(self.root, bg=Theme.BG_DARK, height=70)
         header.pack(fill=tk.X, padx=15, pady=8)
         header.pack_propagate(False)
@@ -222,7 +214,7 @@ class MelodifyApp:
         add_buttons_frame.pack(side=tk.RIGHT, padx=10)
         
         # Add songs button
-        add_btn = tk.Button(add_buttons_frame, text="➕ Add Songs", 
+        add_btn = tk.Button(add_buttons_frame, text=" Add Songs", 
                            font=("Segoe UI", 11, "bold"),
                            bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
                            activebackground=Theme.ACCENT_SECONDARY,
@@ -243,7 +235,6 @@ class MelodifyApp:
                           command=self.add_from_youtube)
         yt_btn.pack(side=tk.LEFT, padx=5)
         
-        # ===== MAIN CONTENT =====
         content = tk.Frame(self.root, bg=Theme.BG_DARK)
         content.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 5))
         
@@ -294,10 +285,10 @@ class MelodifyApp:
         pl_actions = tk.Frame(playlist_frame, bg=Theme.BG_CARD)
         pl_actions.pack(fill=tk.X, padx=8, pady=8)
         
-        for text, cmd in [("🔍 Search", self.search_song),
-                         ("❤️ Favorites", self.show_favorites),
-                         ("🗑️ Clear", self.clear_playlist), 
-                         ("🔀 Shuffle", self.shuffle_playlist)]:
+        for text, cmd in [(" Search", self.search_song),
+                         (" Favorites", self.show_favorites),
+                         (" Clear", self.clear_playlist), 
+                         (" Shuffle", self.shuffle_playlist)]:
             btn = tk.Button(pl_actions, text=text,
                            font=("Segoe UI Symbol", 9),
                            bg=Theme.BG_HOVER, fg=Theme.TEXT_PRIMARY,
@@ -406,7 +397,7 @@ class MelodifyApp:
         vol_frame.pack(fill=tk.X, padx=20, pady=(6, 8))
         vol_frame.pack_propagate(False)
         
-        vol_label = tk.Label(vol_frame, text="🔊",
+        vol_label = tk.Label(vol_frame, text="",
                 font=("Segoe UI Symbol", 14),
                 bg=Theme.BG_CARD, fg=Theme.TEXT_SECONDARY)
         vol_label.pack(side=tk.LEFT, padx=(0, 8))
@@ -423,12 +414,12 @@ class MelodifyApp:
         
         # Hiển thị MP4 support status
         if PYDUB_AVAILABLE and FFMPEG_AVAILABLE:
-            video_status = "✅ Video" if VIDEO_AVAILABLE else "✅ MP4 audio"
+            video_status = "Video" if VIDEO_AVAILABLE else "MP4 audio"
             mp4_status = video_status
         elif PYDUB_AVAILABLE:
-            mp4_status = "⚠️ MP4 (restart terminal for FFmpeg)"
+            mp4_status = " MP4 (restart terminal for FFmpeg)"
         else:
-            mp4_status = "⚠️ MP4 (need pydub+ffmpeg)"
+            mp4_status = " MP4 (need pydub+ffmpeg)"
         self.status_label = tk.Label(status, 
                                     text=f"💡 Tip: Double-click to play | Space to pause | {mp4_status}",
                                     font=("Segoe UI", 9),
@@ -437,7 +428,7 @@ class MelodifyApp:
         
         # Linked List info
         self.ll_info = tk.Label(status,
-                               text="🔗 Linked List: Empty",
+                               text=" Linked List: Empty",
                                font=("Segoe UI", 9),
                                bg=Theme.BG_CARD, fg=Theme.ACCENT_TERTIARY)
         self.ll_info.pack(side=tk.RIGHT, padx=10)
@@ -556,7 +547,7 @@ class MelodifyApp:
                 self.playlist.append(song)
             
             self._refresh_playlist_view()
-            self._update_status(f"✅ Added {len(files)} song(s)")
+            self._update_status(f" Added {len(files)} song(s)")
     
     # ==================== YOUTUBE SUPPORT ====================
     
@@ -642,7 +633,7 @@ class MelodifyApp:
                 else:
                     self.root.after(0, lambda: progress_var.set("Downloading..."))
             elif d['status'] == 'finished':
-                self.root.after(0, lambda: progress_var.set("✅ Download completed! Processing..."))
+                self.root.after(0, lambda: progress_var.set(" Download completed! Processing..."))
         
         def download_thread():
             file_path = None
@@ -654,7 +645,7 @@ class MelodifyApp:
                 print(f"DEBUG: download_youtube returned: file_path={file_path is not None}, info={youtube_info is not None}")
                 
                 # Cập nhật progress window để hiển thị "Tải xong"
-                self.root.after(0, lambda: progress_var.set("✅ Download completed! Adding to playlist..."))
+                self.root.after(0, lambda: progress_var.set(" Download completed! Adding to playlist..."))
                 
                 # Xử lý metadata trong thread để không block UI
                 if file_path and os.path.exists(file_path):
@@ -906,7 +897,7 @@ class MelodifyApp:
                     progress_window.destroy()
             except:
                 pass
-            self._update_status("❌ Failed to download YouTube video: File not found")
+            self._update_status(" Failed to download YouTube video: File not found")
             return
         
         if not song:
@@ -927,7 +918,7 @@ class MelodifyApp:
                         progress_window.destroy()
                 except:
                     pass
-                self._update_status("❌ Failed to process downloaded video")
+                self._update_status(" Failed to process downloaded video")
                 return
         
         try:
@@ -946,12 +937,12 @@ class MelodifyApp:
             self.root.update_idletasks()
             self.root.update()
             
-            self._update_status(f"✅ Added: {song.title}")
+            self._update_status(f" Added: {song.title}")
             print(f"DEBUG: Status updated: Added {song.title}")
         except Exception as e:
             print(f"Error adding song: {e}")
             traceback.print_exc()
-            self._update_status(f"❌ Error adding video: {str(e)}")
+            self._update_status(f" Error adding video: {str(e)}")
             # Đóng window nếu có lỗi
             try:
                 if progress_window and progress_window.winfo_exists():
@@ -986,7 +977,7 @@ class MelodifyApp:
         except Exception as e:
             print(f"Error showing error message: {e}")
         
-        self._update_status("❌ YouTube download failed")
+        self._update_status(" YouTube download failed")
     
     def _on_playlist_downloaded(self, downloaded: int, total: int, progress_window, add_songs_callback=None):
         """Xử lý sau khi download playlist xong"""
@@ -1003,7 +994,7 @@ class MelodifyApp:
         else:
             self._refresh_playlist_view()
         
-        self._update_status(f"✅ Downloaded {downloaded}/{total} videos from YouTube playlist")
+        self._update_status(f" Downloaded {downloaded}/{total} videos from YouTube playlist")
     
     def _refresh_playlist_view(self):
         """Cập nhật Treeview từ Linked List - optimized để không block UI"""
@@ -1233,7 +1224,7 @@ class MelodifyApp:
             self.song_title.config(text="No song playing")
             self.song_artist.config(text="Add songs to start")
             self._draw_vinyl()  # Vẽ lại vinyl
-            self._update_status("🗑️ Playlist cleared")
+            self._update_status(" Playlist cleared")
     
     def _on_seek(self, value):
         """Seek trong bài hát - reload và play từ vị trí mới"""
@@ -1429,9 +1420,9 @@ class MelodifyApp:
         )
         if filename:
             if self.playlist.save_to_file(filename):
-                self._update_status(f"✅ Exported to {os.path.basename(filename)}")
+                self._update_status(f" Exported to {os.path.basename(filename)}")
             else:
-                self._update_status("❌ Export failed!")
+                self._update_status(" Export failed!")
     
     def import_playlist(self):
         """Import playlist từ file"""
@@ -1448,9 +1439,9 @@ class MelodifyApp:
                     for song in imported:
                         self.playlist.append(song)
                 self._refresh_playlist_view()
-                self._update_status("✅ Imported successfully!")
+                self._update_status(" Imported successfully!")
             else:
-                self._update_status("❌ Import failed!")
+                self._update_status(" Import failed!")
     
     def search_song(self):
         """Tìm kiếm bài hát trong playlist"""
@@ -1532,7 +1523,7 @@ class MelodifyApp:
                 self._update_status(f"💔 Removed from favorites: {song.title}")
                 return
         
-        self._update_status("❌ Not in favorites")
+        self._update_status(" Not in favorites")
     
     def show_favorites(self):
         """Hiển thị cửa sổ favorites"""
@@ -1620,7 +1611,7 @@ class MelodifyApp:
         content = tk.Frame(stats_window, bg=Theme.BG_CARD, padx=20, pady=20)
         content.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        tk.Label(content, text="📊 PLAYER STATISTICS",
+        tk.Label(content, text=" PLAYER STATISTICS",
                 font=("Segoe UI", 16, "bold"),
                 bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack(pady=10)
         
@@ -1679,7 +1670,10 @@ class MelodifyApp:
             # Update stats
             self.stats["total_played"] = self.stats.get("total_played", 0) + 1
             self.stats["last_played"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            
+            path = song.path
+            self.stats["song_play_count"][path] = \
+            self.stats["song_play_count"].get(path, 0) + 1
+
             # Update UI với fade animation
             self._fade_update_song_info(song.title, song.artist)
             self.play_btn.icon = "⏸️"
@@ -1708,13 +1702,13 @@ class MelodifyApp:
         else:
             if needs_convert:
                 if not PYDUB_AVAILABLE:
-                    self._update_status(f"❌ Cannot play {ext}: Install pydub (pip install pydub)")
+                    self._update_status(f" Cannot play {ext}: Install pydub (pip install pydub)")
                 elif not FFMPEG_AVAILABLE:
-                    self._update_status(f"❌ Cannot play {ext}: Restart terminal for FFmpeg")
+                    self._update_status(f" Cannot play {ext}: Restart terminal for FFmpeg")
                 else:
-                    self._update_status(f"❌ Error converting: {song.title}")
+                    self._update_status(f" Error converting: {song.title}")
             else:
-                self._update_status(f"❌ Error loading: {song.title}")
+                self._update_status(f" Error loading: {song.title}")
     
     def _on_close(self):
         """Xử lý đóng app"""
@@ -1738,9 +1732,7 @@ class MelodifyApp:
         
         self.root.destroy()
     
-    # ==================== LINKED LIST VISUALIZATION & OPERATIONS ====================
-    # CÁC TÍNH NĂNG NÀY THỂ HIỆN RÕ RÀNG KHẢ NĂNG CỦA LINKED LIST
-    
+    #linklist visualization
     def show_linked_list_visualization(self):
         """Hiển thị cửa sổ visualization Linked List - THỂ HIỆN CẤU TRÚC DỮ LIỆU"""
         vis_window = tk.Toplevel(self.root)
@@ -1975,22 +1967,22 @@ class MelodifyApp:
         
         # Operations list
         ops_text = """
-📋 Các Operations đã implement:
+ Các Operations đã implement:
 
-✅ O(1) Operations:
+ O(1) Operations:
    • append(song) - Thêm vào cuối
    • prepend(song) - Thêm vào đầu
    • next() - Chuyển đến node tiếp theo
    • previous() - Chuyển đến node trước
    • remove_current() - Xóa node hiện tại
 
-✅ O(n) Operations:
+ O(n) Operations:
    • insert_at(index, song) - Chèn tại vị trí
    • remove_at(index) - Xóa tại vị trí
    • go_to(index) - Nhảy đến index
    • find_by_title(title) - Tìm kiếm
 
-✅ Special Features:
+ Special Features:
    • Circular mode - Lặp playlist
    • Shuffle - Xáo trộn
    • Save/Load - Lưu trữ
@@ -2005,19 +1997,19 @@ class MelodifyApp:
         btn_frame = tk.Frame(content, bg=Theme.BG_DARK)
         btn_frame.pack(pady=20)
         
-        tk.Button(btn_frame, text="➕ Insert at Position",
+        tk.Button(btn_frame, text=" Insert at Position",
                  command=self.insert_song_at_position,
                  bg=Theme.ACCENT_PRIMARY, fg=Theme.BG_DARK,
                  font=("Segoe UI", 10, "bold"),
                  padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
         
-        tk.Button(btn_frame, text="➖ Delete at Position",
+        tk.Button(btn_frame, text=" Delete at Position",
                  command=self.delete_song_at_position,
                  bg=Theme.ACCENT_SECONDARY, fg=Theme.TEXT_PRIMARY,
                  font=("Segoe UI", 10, "bold"),
                  padx=15, pady=8, border=0, cursor="hand2").pack(pady=5, fill=tk.X)
         
-        tk.Button(btn_frame, text="📊 View Visualization",
+        tk.Button(btn_frame, text=" View Visualization",
                  command=self.show_linked_list_visualization,
                  bg=Theme.ACCENT_TERTIARY, fg=Theme.TEXT_PRIMARY,
                  font=("Segoe UI", 10, "bold"),
@@ -2031,13 +2023,13 @@ class MelodifyApp:
     def show_linked_list_info(self):
         """Hiển thị thông tin chi tiết về Linked List"""
         info_window = tk.Toplevel(self.root)
-        info_window.title("ℹ️ Linked List Information")
+        info_window.title("ℹ Linked List Information")
         info_window.geometry("600x500")
         info_window.configure(bg=Theme.BG_DARK)
         
         header = tk.Frame(info_window, bg=Theme.BG_CARD, pady=15)
         header.pack(fill=tk.X, padx=10, pady=10)
-        tk.Label(header, text="ℹ️ LINKED LIST INFORMATION",
+        tk.Label(header, text="ℹLINKED LIST INFORMATION",
                 font=("Segoe UI", 16, "bold"),
                 bg=Theme.BG_CARD, fg=Theme.ACCENT_PRIMARY).pack()
         
@@ -2065,11 +2057,11 @@ class MelodifyApp:
    • Current has prev: {self.playlist.has_previous()}
 
 ⚡ TIME COMPLEXITY:
-   • next() / previous(): O(1) ✅
-   • append() / prepend(): O(1) ✅
-   • remove_current(): O(1) ✅
-   • insert_at() / remove_at(): O(n) ⚠️
-   • go_to(index): O(n) ⚠️ (tối ưu từ 2 phía)
+   • next() / previous(): O(1) 
+   • append() / prepend(): O(1) 
+   • remove_current(): O(1) 
+   • insert_at() / remove_at(): O(n) 
+   • go_to(index): O(n)  (tối ưu từ 2 phía)
 
 🔗 LINKED LIST STRUCTURE:
    Node:
@@ -2148,10 +2140,10 @@ class MelodifyApp:
         for file_path in files:
             song = Song.from_path(file_path)
             if self.playlist.insert_at(position, song):
-                self._update_status(f"✅ Inserted '{song.title}' at position {position}")
+                self._update_status(f" Inserted '{song.title}' at position {position}")
                 position += 1  # Tăng position cho các file tiếp theo
             else:
-                self._update_status(f"❌ Failed to insert '{song.title}'")
+                self._update_status(f" Failed to insert '{song.title}'")
         
         self._refresh_playlist_view()
         self._update_ll_info()
@@ -2175,10 +2167,10 @@ class MelodifyApp:
         song = self.playlist.remove_at(position)
         if song:
             self._refresh_playlist_view()
-            self._update_status(f"🗑️ Deleted '{song.title}' at position {position}")
+            self._update_status(f" Deleted '{song.title}' at position {position}")
             self._update_ll_info()
         else:
-            self._update_status(f"❌ Failed to delete at position {position}")
+            self._update_status(f" Failed to delete at position {position}")
     
     def _fade_update_song_info(self, title, artist):
         """Update song info với fade animation"""

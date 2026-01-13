@@ -1,6 +1,3 @@
-# ============================================
-# YOUTUBE HANDLER - Download và xử lý YouTube
-# ============================================
 
 import os
 import re
@@ -76,7 +73,6 @@ def download_youtube(url: str, output_dir: str, progress_callback=None) -> tuple
             ydl_opts['progress_hooks'] = [progress_callback]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Lấy thông tin video TRƯỚC khi download
             info = ydl.extract_info(url, download=False)
             
             # Download
